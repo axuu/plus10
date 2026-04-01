@@ -81,10 +81,13 @@ class Executor:
             start_y -= shrink
             end_y += shrink
 
-        # 执行拖拽
+        # 执行拖拽（给游戏足够时间感知）
         pyautogui.moveTo(start_x, start_y, duration=0)
+        time.sleep(0.05)
         pyautogui.mouseDown()
-        pyautogui.moveTo(end_x, end_y, duration=0)
+        time.sleep(0.05)
+        pyautogui.moveTo(end_x, end_y, duration=0.15)
+        time.sleep(0.05)
         pyautogui.mouseUp()
 
         # 等待消除动画
