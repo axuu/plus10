@@ -4,6 +4,7 @@ import yaml
 import keyboard
 import numpy as np
 
+import win32gui
 from capture import set_dpi_aware, find_game_window, capture_window
 from recognizer import GridRecognizer
 from solver import solve
@@ -71,6 +72,11 @@ def main():
         while running:
             if paused:
                 time.sleep(0.1)
+                continue
+
+            # 检查窗口是否在前台
+            if win32gui.GetForegroundWindow() != hwnd:
+                time.sleep(0.5)
                 continue
 
             # 截图
