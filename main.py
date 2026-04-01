@@ -93,9 +93,28 @@ def main():
                 rows=grid_cfg["rows"],
             )
 
+            # 保存 debug 信息
+            import cv2
+            import os
+            os.makedirs("debug", exist_ok=True)
+            cv2.imwrite("debug/screenshot.png", screenshot)
+            np.savetxt("debug/grid.txt", grid, fmt="%d", delimiter=" ")
+            # 保存每个格子的单独图片
+            for r in range(grid_cfg["rows"]):
+                for c in range(grid_cfg["cols"]):
+                    x = grid_cfg["origin_x"] + c * grid_cfg["cell_width"]
+                    y = grid_cfg["origin_y"] + r * grid_cfg["cell_height"]
+                    cell = screenshot[y:y + grid_cfg["cell_height"], x:x + grid_cfg["cell_width"]]
+                    cv2.imwrite(f"debug/cell_{r:02d}_{c:02d}_val{grid[r][c]}.png", cell)
+            print("debug 信息已保存到 debug/ 目录")
+
             # 打印当前矩阵
             nonzero = np.count_nonzero(grid)
             print(f"\n识别到 {nonzero} 个数字，当前总分: {total_score}")
+            print("矩阵:")
+            for r in range(grid_cfg["rows"]):
+                row_str = " ".join(str(grid[r][c]) if grid[r][c] > 0 else "." for c in range(grid_cfg["cols"]))
+                print(f"  {row_str}")
 
             if nonzero == 0:
                 print("网格为空，等待新一轮...")
