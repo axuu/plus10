@@ -3,12 +3,13 @@ import numpy as np
 
 try:
     import win32gui
-    import win32ui
-    import win32con
 except ImportError:
     win32gui = None
-    win32ui = None
-    win32con = None
+
+try:
+    import mss
+except ImportError:
+    mss = None
 
 
 def set_dpi_aware():
@@ -41,43 +42,25 @@ def find_game_window(title: str) -> int:
 
 
 def capture_window(hwnd: int) -> np.ndarray:
-    """截取指定窗口的图像。
+    """截取指定窗口所在屏幕区域的图像。
+
+    使用 mss 直接截取屏幕区域，兼容 GPU 渲染的窗口。
+    注意：窗口不能被其他窗口遮挡。
 
     Args:
         hwnd: 窗口句柄
 
     Returns:
         BGR 格式的 numpy 数组 (H, W, 3)
-
-    Raises:
-        RuntimeError: 截图失败
     """
     left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-    width = right - left
-    height = bottom - top
 
-    hwnd_dc = win32gui.GetWindowDC(hwnd)
-    mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
-    save_dc = mfc_dc.CreateCompatibleDC()
-
-    bitmap = win32ui.CreateBitmap()
-    bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
-    save_dc.SelectObject(bitmap)
-
-    save_dc.BitBlt((0, 0), (width, height), mfc_dc, (0, 0), win32con.SRCCOPY)
-
-    bmp_info = bitmap.GetInfo()
-    bmp_bits = bitmap.GetBitmapBits(True)
-
-    img = np.frombuffer(bmp_bits, dtype=np.uint8)
-    img = img.reshape((bmp_info["bmHeight"], bmp_info["bmWidth"], 4))
-    img = img[:, :, :3]  # BGRA -> BGR
-
-    # 清理资源
-    win32gui.DeleteObject(bitmap.GetHandle())
-    save_dc.DeleteDC()
-    mfc_dc.DeleteDC()
-    win32gui.ReleaseDC(hwnd, hwnd_dc)
+    with mss.mss() as sct:
+        monitor = {"left": left, "top": top, "width": right - left, "height": bottom - top}
+        screenshot = sct.grab(monitor)
+        img = np.array(screenshot, dtype=np.uint8)
+        # mss 返回 BGRA，转为 BGR
+        img = img[:, :, :3]
 
     return img
 
