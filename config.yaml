@@ -14,9 +14,10 @@ recognition:
 
 solver:
   search_depth: 3
+  beam_width: 15
 
 executor:
-  animation_delay: 0.5
+  animation_delay: 0.3
   inward_shrink: 5
 
 hotkeys:

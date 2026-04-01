@@ -45,6 +45,7 @@ def main():
     )
 
     search_depth = config["solver"]["search_depth"]
+    beam_width = config["solver"].get("beam_width", 15)
     paused = False
     total_score = 0
 
@@ -96,7 +97,7 @@ def main():
                 continue
 
             # 求解
-            move = solve(grid, depth=search_depth)
+            move = solve(grid, depth=search_depth, beam_width=beam_width)
 
             if move is None:
                 print("没有可消除的矩形，等待...")
