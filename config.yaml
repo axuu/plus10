@@ -1,0 +1,24 @@
+window_title: "羊了个羊：星球"
+
+grid:
+  origin_x: 0
+  origin_y: 0
+  cell_width: 50
+  cell_height: 50
+  cols: 10
+  rows: 16
+
+recognition:
+  confidence_threshold: 0.7
+  empty_variance_threshold: 500
+
+solver:
+  search_depth: 3
+
+executor:
+  animation_delay: 0.5
+  inward_shrink: 5
+
+hotkeys:
+  pause: "F10"
+  quit: "F12"
