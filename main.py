@@ -30,8 +30,7 @@ def main():
     recognizer = GridRecognizer(
         template_dir="templates",
         confidence_threshold=config["recognition"]["confidence_threshold"],
-        empty_variance_threshold=config["recognition"]["empty_variance_threshold"],
-        crop_ratio=config["recognition"].get("crop_ratio", 0.5),
+        dark_threshold=config["recognition"].get("dark_threshold", 80),
     )
 
     # 初始化执行器
@@ -107,6 +106,10 @@ def main():
                     y = grid_cfg["origin_y"] + r * grid_cfg["cell_height"]
                     cell = screenshot[y:y + grid_cfg["cell_height"], x:x + grid_cfg["cell_width"]]
                     cv2.imwrite(f"debug/cell_{r:02d}_{c:02d}_val{grid[r][c]}.png", cell)
+                    # 保存二值化后的图片
+                    from recognizer import _extract_dark_pixels
+                    binary = _extract_dark_pixels(cell, config["recognition"].get("dark_threshold", 80))
+                    cv2.imwrite(f"debug/bin_{r:02d}_{c:02d}_val{grid[r][c]}.png", binary)
             print("debug 信息已保存到 debug/ 目录")
 
             # 打印当前矩阵

@@ -10,8 +10,7 @@ grid:
 
 recognition:
   confidence_threshold: 0.7
-  empty_variance_threshold: 500
-  crop_ratio: 0.5  # 只用格子中心50%区域识别数字，忽略包子轮廓
+  dark_threshold: 80  # 灰度低于此值视为数字像素，其余过滤掉
 
 solver:
   search_depth: 3

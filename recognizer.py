@@ -3,17 +3,19 @@ import cv2
 import numpy as np
 
 
-def _crop_center(img: np.ndarray, ratio: float) -> np.ndarray:
-    """裁取图片中心区域，只保留数字部分，忽略外围包子轮廓。
+def _extract_dark_pixels(img: np.ndarray, threshold: int = 80) -> np.ndarray:
+    """只保留深色像素（数字），其余变白。
 
     Args:
-        img: 输入图片
-        ratio: 保留比例 (0-1)，如 0.5 表示裁取中心 50% 区域
+        img: BGR 图片
+        threshold: 灰度阈值，低于此值视为深色（数字）
+
+    Returns:
+        二值化灰度图，数字为黑(0)，背景为白(255)
     """
-    h, w = img.shape[:2]
-    margin_x = int(w * (1 - ratio) / 2)
-    margin_y = int(h * (1 - ratio) / 2)
-    return img[margin_y:h - margin_y, margin_x:w - margin_x]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+    return binary
 
 
 class GridRecognizer:
@@ -24,11 +26,11 @@ class GridRecognizer:
         template_dir: str,
         confidence_threshold: float = 0.7,
         empty_variance_threshold: float = 500,
-        crop_ratio: float = 0.5,
+        dark_threshold: int = 80,
     ):
         self.confidence_threshold = confidence_threshold
         self.empty_variance_threshold = empty_variance_threshold
-        self.crop_ratio = crop_ratio
+        self.dark_threshold = dark_threshold
         self.templates: dict[int, np.ndarray] = {}
 
         for d in range(1, 10):
@@ -36,8 +38,7 @@ class GridRecognizer:
             if os.path.exists(path):
                 tpl = cv2.imread(path)
                 if tpl is not None:
-                    # 模板也只保留中心区域
-                    self.templates[d] = _crop_center(tpl, crop_ratio)
+                    self.templates[d] = _extract_dark_pixels(tpl, dark_threshold)
 
     def recognize_cell(self, cell_img: np.ndarray) -> int:
         """识别单个格子中的数字。
@@ -48,20 +49,19 @@ class GridRecognizer:
         Returns:
             1-9 表示数字，0 表示空格
         """
-        # 裁取中心区域
-        center = _crop_center(cell_img, self.crop_ratio)
+        binary = _extract_dark_pixels(cell_img, self.dark_threshold)
 
-        # 快速空格检测
-        gray = cv2.cvtColor(center, cv2.COLOR_BGR2GRAY)
-        if np.var(gray) < self.empty_variance_threshold:
+        # 快速空格检测：深色像素太少说明无数字
+        dark_ratio = np.count_nonzero(binary) / binary.size
+        if dark_ratio < 0.02:
             return 0
 
         best_digit = 0
         best_score = -1.0
 
         for digit, tpl in self.templates.items():
-            tpl_resized = cv2.resize(tpl, (center.shape[1], center.shape[0]))
-            result = cv2.matchTemplate(center, tpl_resized, cv2.TM_CCOEFF_NORMED)
+            tpl_resized = cv2.resize(tpl, (binary.shape[1], binary.shape[0]))
+            result = cv2.matchTemplate(binary, tpl_resized, cv2.TM_CCOEFF_NORMED)
             score = result[0][0]
 
             if score > best_score:
