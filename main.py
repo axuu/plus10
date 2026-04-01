@@ -31,6 +31,7 @@ def main():
         template_dir="templates",
         confidence_threshold=config["recognition"]["confidence_threshold"],
         empty_variance_threshold=config["recognition"]["empty_variance_threshold"],
+        crop_ratio=config["recognition"].get("crop_ratio", 0.5),
     )
 
     # 初始化执行器

@@ -11,6 +11,7 @@ grid:
 recognition:
   confidence_threshold: 0.7
   empty_variance_threshold: 500
+  crop_ratio: 0.5  # 只用格子中心50%区域识别数字，忽略包子轮廓
 
 solver:
   search_depth: 3
