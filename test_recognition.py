@@ -118,9 +118,9 @@ def diagnose(screenshot_path: str):
     )
 
     print(f"\n=== 模板 ===")
-    print(f"  已加载: {list(recognizer.templates.keys())}")
-    for d, tpl in recognizer.templates.items():
-        print(f"  模板 {d}: shape={tpl.shape}, 非零像素={np.count_nonzero(tpl)}/{tpl.size} ({np.count_nonzero(tpl)/tpl.size*100:.1f}%)")
+    print(f"  已加载: {list(recognizer.templates_raw.keys())}")
+    for d, tpl in recognizer.templates_raw.items():
+        print(f"  模板 {d}: shape={tpl.shape}")
 
     screenshot = cv2.imread(screenshot_path)
     if screenshot is None:

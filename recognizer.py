@@ -7,7 +7,10 @@ log = logging.getLogger("recognizer")
 
 
 def _extract_dark_pixels(img: np.ndarray, threshold: int = 80) -> np.ndarray:
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if len(img.shape) == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img
     _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
     return binary
 
@@ -23,7 +26,8 @@ class GridRecognizer:
         self.confidence_threshold = confidence_threshold
         self.empty_variance_threshold = empty_variance_threshold
         self.dark_threshold = dark_threshold
-        self.templates: dict[int, np.ndarray] = {}
+        # 存储原始彩色模板，不预先二值化
+        self.templates_raw: dict[int, np.ndarray] = {}
 
         log.info(f"加载模板目录: {template_dir}, dark_threshold={dark_threshold}")
         for d in range(1, 10):
@@ -40,15 +44,20 @@ class GridRecognizer:
 
             tpl = cv2.imread(path)
             if tpl is not None:
-                self.templates[d] = _extract_dark_pixels(tpl, dark_threshold)
-                dark_px = np.count_nonzero(self.templates[d])
-                log.info(f"  模板 {d}: shape={tpl.shape}, 深色像素={dark_px}, 文件={path}")
+                self.templates_raw[d] = tpl
+                log.info(f"  模板 {d}: shape={tpl.shape}, 文件={path}")
             else:
                 log.warning(f"  模板 {d}: 读取失败 ({path})")
 
-        log.info(f"共加载 {len(self.templates)} 个模板")
+        log.info(f"共加载 {len(self.templates_raw)} 个模板")
+
+        # 兼容旧代码引用
+        self.templates = self.templates_raw
 
     def recognize_cell(self, cell_img: np.ndarray, row: int = -1, col: int = -1) -> int:
+        cell_h, cell_w = cell_img.shape[:2]
+
+        # 对格子做二值化
         binary = _extract_dark_pixels(cell_img, self.dark_threshold)
 
         dark_ratio = np.count_nonzero(binary) / binary.size
@@ -60,9 +69,12 @@ class GridRecognizer:
         best_score = -1.0
         scores = {}
 
-        for digit, tpl in self.templates.items():
-            tpl_resized = cv2.resize(tpl, (binary.shape[1], binary.shape[0]))
-            result = cv2.matchTemplate(binary, tpl_resized, cv2.TM_CCOEFF_NORMED)
+        for digit, tpl_raw in self.templates_raw.items():
+            # 先缩放原图到格子尺寸，再二值化（关键改动）
+            tpl_resized = cv2.resize(tpl_raw, (cell_w, cell_h))
+            tpl_binary = _extract_dark_pixels(tpl_resized, self.dark_threshold)
+
+            result = cv2.matchTemplate(binary, tpl_binary, cv2.TM_CCOEFF_NORMED)
             score = result[0][0]
             scores[digit] = score
 
