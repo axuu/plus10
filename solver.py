@@ -1,26 +1,20 @@
 # solver.py
 import numpy as np
+import logging
+
+log = logging.getLogger("solver")
 
 
 def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int]]:
-    """找出所有和为10且至少包含2个非空数字的矩形（向量化实现）。
-
-    Args:
-        grid: 16x10 数组，0=空格，1-9=数字
-
-    Returns:
-        list of (r1, c1, r2, c2) 矩形坐标
-    """
+    """找出所有和为10且至少包含2个非空数字的矩形（向量化实现）。"""
     rows, cols = grid.shape
 
-    # 前缀和
     sum_prefix = np.zeros((rows + 1, cols + 1), dtype=np.int32)
     cnt_prefix = np.zeros((rows + 1, cols + 1), dtype=np.int32)
 
     sum_prefix[1:, 1:] = np.cumsum(np.cumsum(grid, axis=0), axis=1)
     cnt_prefix[1:, 1:] = np.cumsum(np.cumsum(grid > 0, axis=0), axis=1)
 
-    # 生成所有 (r1, c1, r2, c2) 组合的索引
     r1_vals = np.arange(rows)
     c1_vals = np.arange(cols)
     r2_vals = np.arange(rows)
@@ -32,11 +26,9 @@ def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int]]:
     r2 = r2.ravel()
     c2 = c2.ravel()
 
-    # 只保留 r2 >= r1 且 c2 >= c1
     mask = (r2 >= r1) & (c2 >= c1)
     r1, c1, r2, c2 = r1[mask], c1[mask], r2[mask], c2[mask]
 
-    # 向量化计算矩形和与非零计数
     rect_sum = (
         sum_prefix[r2 + 1, c2 + 1]
         - sum_prefix[r1, c2 + 1]
@@ -60,39 +52,56 @@ def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int]]:
 
 
 def _count_nonzero_in_rect(grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> int:
-    """计算矩形内非零元素数量"""
     return int(np.count_nonzero(grid[r1:r2 + 1, c1:c2 + 1]))
 
 
 def _apply_move(grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> np.ndarray:
-    """执行消除，返回新的 grid（不修改原数组）"""
     new_grid = grid.copy()
     new_grid[r1:r2 + 1, c1:c2 + 1] = 0
     return new_grid
 
 
+def _estimate_potential(grid: np.ndarray) -> float:
+    """估算剩余局面的消除潜力（快速启发式）。"""
+    candidates = find_valid_rectangles(grid)
+    if not candidates:
+        return 0.0
+
+    # 取最大的几个不重叠消除作为潜力估算
+    used = np.zeros_like(grid, dtype=bool)
+    potential = 0
+    # 按消除数排序
+    scored = []
+    for rect in candidates:
+        cnt = _count_nonzero_in_rect(grid, *rect)
+        scored.append((cnt, rect))
+    scored.sort(reverse=True)
+
+    for cnt, (r1, c1, r2, c2) in scored[:20]:
+        # 检查是否与已选的重叠
+        region = used[r1:r2+1, c1:c2+1]
+        if np.any(region):
+            continue
+        used[r1:r2+1, c1:c2+1] = True
+        potential += cnt
+
+    return potential
+
+
 def _dfs(
     grid: np.ndarray, depth: int, current_score: int, beam_width: int,
-) -> tuple[int, tuple | None]:
-    """DFS + Beam Search 搜索最优消除序列的第一步。
-
-    Args:
-        grid: 当前棋盘
-        depth: 剩余搜索深度
-        current_score: 当前累计分数
-        beam_width: 每层最多探索的候选数
-
-    Returns:
-        (best_total_score, best_first_move)
-    """
+) -> tuple[float, tuple | None]:
+    """DFS + Beam Search 搜索最优消除序列的第一步。"""
     if depth == 0:
-        return current_score, None
+        # 叶子节点：当前分 + 未来潜力估算（折扣）
+        potential = _estimate_potential(grid)
+        return current_score + potential * 0.3, None
 
     candidates = find_valid_rectangles(grid)
     if not candidates:
         return current_score, None
 
-    # 按消除数字数降序排列，同分时优先小面积矩形；只取前 beam_width 个
+    # 排序：按消除数降序；同消除数优先密度高（小面积）的
     candidates.sort(
         key=lambda r: (
             _count_nonzero_in_rect(grid, r[0], r[1], r[2], r[3]),
@@ -119,14 +128,14 @@ def _dfs(
 
 
 def solve(
-    grid: np.ndarray, depth: int = 3, beam_width: int = 15,
+    grid: np.ndarray, depth: int = 4, beam_width: int = 20,
 ) -> tuple[int, int, int, int] | None:
     """求解当前局面的最优第一步消除。
 
     Args:
         grid: 16x10 数组
-        depth: 前瞻搜索深度
-        beam_width: 每层最多探索的候选数量
+        depth: 前瞻搜索深度（默认4）
+        beam_width: 每层最多探索的候选数量（默认20）
 
     Returns:
         (r1, c1, r2, c2) 最优矩形，或 None 表示无合法消除
