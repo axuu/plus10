@@ -12,13 +12,6 @@ except ImportError as e:
     log.warning(f"win32gui 导入失败: {e}")
 
 try:
-    import win32ui
-    log.debug("win32ui 导入成功")
-except ImportError as e:
-    win32ui = None
-    log.warning(f"win32ui 导入失败: {e}")
-
-try:
     import mss
     log.debug("mss 导入成功")
 except ImportError as e:
@@ -51,36 +44,40 @@ def find_game_window(title: str) -> int:
 
 
 def capture_window(hwnd: int) -> np.ndarray:
-    """截取窗口客户区内容，使用 PrintWindow API（不受遮挡/任务栏影响）"""
-    client_left, client_top, client_right, client_bottom = win32gui.GetClientRect(hwnd)
-    width = client_right - client_left
-    height = client_bottom - client_top
+    """截取窗口客户区，自动排除任务栏区域"""
+    # 获取客户区屏幕坐标
+    cr_left, cr_top, cr_right, cr_bottom = win32gui.GetClientRect(hwnd)
+    left, top = win32gui.ClientToScreen(hwnd, (cr_left, cr_top))
+    width = cr_right - cr_left
+    height = cr_bottom - cr_top
 
-    if width == 0 or height == 0:
-        raise RuntimeError(f"窗口客户区尺寸为零: {width}x{height}")
+    # 获取工作区（屏幕减去任务栏）并裁剪
+    try:
+        import win32api
+        monitor = win32api.MonitorFromWindow(hwnd, 0)
+        info = win32api.GetMonitorInfo(monitor)
+        work = info["Work"]  # (left, top, right, bottom)
+        clipped_bottom = min(top + height, work[3])
+        clipped_right = min(left + width, work[2])
+        clipped_left = max(left, work[0])
+        clipped_top = max(top, work[1])
+        width = clipped_right - clipped_left
+        height = clipped_bottom - clipped_top
+        left = clipped_left
+        top = clipped_top
+        log.debug(f"客户区截图(裁剪到工作区): left={left}, top={top}, w={width}, h={height}, work_area={work}")
+    except Exception as e:
+        log.warning(f"获取工作区失败，使用完整客户区: {e}")
+        log.debug(f"客户区截图: left={left}, top={top}, w={width}, h={height}")
 
-    log.debug(f"客户区尺寸: {width}x{height}")
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"截图区域无效: {width}x{height}")
 
-    # 使用 PrintWindow 直接从窗口获取内容（不受遮挡影响）
-    hwnd_dc = win32gui.GetWindowDC(hwnd)
-    mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
-    save_dc = mfc_dc.CreateCompatibleDC()
-
-    bitmap = win32ui.CreateBitmap()
-    bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
-    save_dc.SelectObject(bitmap)
-
-    # PW_CLIENTONLY = 1，只截取客户区
-    ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 1)
-
-    bmp_bits = bitmap.GetBitmapBits(True)
-    img = np.frombuffer(bmp_bits, dtype=np.uint8).reshape((height, width, 4))
-    img = img[:, :, :3]  # BGRA -> BGR
-
-    win32gui.DeleteObject(bitmap.GetHandle())
-    save_dc.DeleteDC()
-    mfc_dc.DeleteDC()
-    win32gui.ReleaseDC(hwnd, hwnd_dc)
+    with mss.mss() as sct:
+        monitor = {"left": left, "top": top, "width": width, "height": height}
+        screenshot = sct.grab(monitor)
+        img = np.array(screenshot, dtype=np.uint8)
+        img = img[:, :, :3]  # BGRA -> BGR
 
     log.debug(f"截图完成: shape={img.shape}")
     return img
