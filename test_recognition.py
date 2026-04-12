@@ -75,25 +75,27 @@ def test_screenshot(screenshot_path: str):
     total = grid_cfg["rows"] * grid_cfg["cols"]
     print(f"非空格子: {non_zero}/{total}")
 
-    # 保存可视化 (比例值转像素)
+    # 保存可视化 (浮点运算避免累积偏移)
     h, w = screenshot.shape[:2]
-    ox = int(grid_cfg["origin_x"] * w) if grid_cfg["origin_x"] <= 1.0 else int(grid_cfg["origin_x"])
-    oy = int(grid_cfg["origin_y"] * h) if grid_cfg["origin_y"] <= 1.0 else int(grid_cfg["origin_y"])
-    cw = int(grid_cfg["cell_width"] * w) if grid_cfg["cell_width"] <= 1.0 else int(grid_cfg["cell_width"])
-    ch = int(grid_cfg["cell_height"] * h) if grid_cfg["cell_height"] <= 1.0 else int(grid_cfg["cell_height"])
+    ox = grid_cfg["origin_x"] * w if grid_cfg["origin_x"] <= 1.0 else float(grid_cfg["origin_x"])
+    oy = grid_cfg["origin_y"] * h if grid_cfg["origin_y"] <= 1.0 else float(grid_cfg["origin_y"])
+    cw = grid_cfg["cell_width"] * w if grid_cfg["cell_width"] <= 1.0 else float(grid_cfg["cell_width"])
+    ch = grid_cfg["cell_height"] * h if grid_cfg["cell_height"] <= 1.0 else float(grid_cfg["cell_height"])
 
     vis = screenshot.copy()
     for r in range(grid_cfg["rows"]):
         for c in range(grid_cfg["cols"]):
-            x = ox + c * cw
-            y = oy + r * ch
+            x1 = int(round(ox + c * cw))
+            y1 = int(round(oy + r * ch))
+            x2 = int(round(ox + (c + 1) * cw))
+            y2 = int(round(oy + (r + 1) * ch))
 
-            cv2.rectangle(vis, (x, y), (x + cw, y + ch), (0, 255, 0), 1)
+            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 1)
 
             v = grid[r][c]
             if v > 0:
-                tx = x + cw // 2 - 8
-                ty = y + ch // 2 + 8
+                tx = x1 + (x2 - x1) // 2 - 8
+                ty = y1 + (y2 - y1) // 2 + 8
                 cv2.putText(vis, str(v), (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
     out_path = "test_result.png"
