@@ -53,11 +53,10 @@ def detect_circles_in_region(screenshot, x1, y1, x2, y2):
         if circularity < 0.5:
             continue
 
-        M = cv2.moments(cnt)
-        if M["m00"] == 0:
-            continue
-        cx = int(M["m10"] / M["m00"]) + x1  # 转回整图坐标
-        cy = int(M["m01"] / M["m00"]) + y1
+        # 用外接矩形中心而非重心，避免阴影导致偏移
+        bx, by, bw, bh = cv2.boundingRect(cnt)
+        cx = bx + bw // 2 + x1  # 转回整图坐标
+        cy = by + bh // 2 + y1
         centers.append((cx, cy))
         areas.append(area)
 
