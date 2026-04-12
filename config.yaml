@@ -10,7 +10,7 @@ grid:
   rows: 16
 
 recognition:
-  confidence_threshold: 0.7
+  confidence_threshold: 0.55
   dark_threshold: 80  # 灰度低于此值视为数字像素，其余过滤掉
 
 solver:
