@@ -36,21 +36,23 @@ def main():
     cols = grid_cfg["cols"]
     rows = grid_cfg["rows"]
 
-    ox = int(grid_cfg["origin_x"] * w) if grid_cfg["origin_x"] <= 1.0 else int(grid_cfg["origin_x"])
-    oy = int(grid_cfg["origin_y"] * h) if grid_cfg["origin_y"] <= 1.0 else int(grid_cfg["origin_y"])
-    cw = int(grid_cfg["cell_width"] * w) if grid_cfg["cell_width"] <= 1.0 else int(grid_cfg["cell_width"])
-    ch = int(grid_cfg["cell_height"] * h) if grid_cfg["cell_height"] <= 1.0 else int(grid_cfg["cell_height"])
+    ox = grid_cfg["origin_x"] * w if grid_cfg["origin_x"] <= 1.0 else float(grid_cfg["origin_x"])
+    oy = grid_cfg["origin_y"] * h if grid_cfg["origin_y"] <= 1.0 else float(grid_cfg["origin_y"])
+    cw = grid_cfg["cell_width"] * w if grid_cfg["cell_width"] <= 1.0 else float(grid_cfg["cell_width"])
+    ch = grid_cfg["cell_height"] * h if grid_cfg["cell_height"] <= 1.0 else float(grid_cfg["cell_height"])
 
-    print(f"网格: origin=({ox},{oy}), cell={cw}x{ch}, grid={cols}x{rows}")
+    print(f"网格: origin=({ox:.1f},{oy:.1f}), cell={cw:.1f}x{ch:.1f}, grid={cols}x{rows}")
 
     out_dir = "cells"
     os.makedirs(out_dir, exist_ok=True)
 
     for r in range(rows):
         for c in range(cols):
-            x = ox + c * cw
-            y = oy + r * ch
-            cell = screenshot[y:y+ch, x:x+cw]
+            x = int(round(ox + c * cw))
+            y = int(round(oy + r * ch))
+            x2 = int(round(ox + (c + 1) * cw))
+            y2 = int(round(oy + (r + 1) * ch))
+            cell = screenshot[y:y2, x:x2]
             fname = f"r{r:02d}_c{c:02d}.png"
             cv2.imwrite(os.path.join(out_dir, fname), cell)
 

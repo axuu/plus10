@@ -110,32 +110,23 @@ class GridRecognizer:
     ) -> np.ndarray:
         h, w = screenshot.shape[:2]
 
-        # 如果值 <= 1.0，视为比例，乘以截图尺寸转换为像素
-        if origin_x <= 1.0:
-            origin_x = int(origin_x * w)
-        else:
-            origin_x = int(origin_x)
-        if origin_y <= 1.0:
-            origin_y = int(origin_y * h)
-        else:
-            origin_y = int(origin_y)
-        if cell_width <= 1.0:
-            cell_width = int(cell_width * w)
-        else:
-            cell_width = int(cell_width)
-        if cell_height <= 1.0:
-            cell_height = int(cell_height * h)
-        else:
-            cell_height = int(cell_height)
+        # 如果值 <= 1.0，视为比例，乘以截图尺寸（保持浮点精度）
+        ox = origin_x * w if origin_x <= 1.0 else float(origin_x)
+        oy = origin_y * h if origin_y <= 1.0 else float(origin_y)
+        cw = cell_width * w if cell_width <= 1.0 else float(cell_width)
+        ch = cell_height * h if cell_height <= 1.0 else float(cell_height)
 
-        log.debug(f"提取网格: origin=({origin_x},{origin_y}), cell=({cell_width}x{cell_height}), grid=({cols}x{rows}), 截图=({w}x{h})")
+        log.debug(f"提取网格: origin=({ox:.1f},{oy:.1f}), cell=({cw:.1f}x{ch:.1f}), grid=({cols}x{rows}), 截图=({w}x{h})")
         grid = np.zeros((rows, cols), dtype=int)
 
         for r in range(rows):
             for c in range(cols):
-                x = origin_x + c * cell_width
-                y = origin_y + r * cell_height
-                cell = screenshot[y:y + cell_height, x:x + cell_width]
+                # 每个格子独立从浮点计算像素位置，避免误差累积
+                x = int(round(ox + c * cw))
+                y = int(round(oy + r * ch))
+                x2 = int(round(ox + (c + 1) * cw))
+                y2 = int(round(oy + (r + 1) * ch))
+                cell = screenshot[y:y2, x:x2]
 
                 if cell.shape[0] == 0 or cell.shape[1] == 0:
                     log.warning(f"  cell({r},{c}): 空图片 shape={cell.shape}")
