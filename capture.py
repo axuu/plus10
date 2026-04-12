@@ -44,10 +44,20 @@ def find_game_window(title: str) -> int:
 
 
 def capture_window(hwnd: int) -> np.ndarray:
-    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-    width = right - left
-    height = bottom - top
-    log.debug(f"截图区域: left={left}, top={top}, w={width}, h={height}")
+    # 用 ClientRect + ClientToScreen 只截取客户区（不含标题栏、边框、阴影）
+    try:
+        import win32gui as _wg
+        client_left, client_top, client_right, client_bottom = _wg.GetClientRect(hwnd)
+        left, top = _wg.ClientToScreen(hwnd, (client_left, client_top))
+        width = client_right - client_left
+        height = client_bottom - client_top
+        log.debug(f"客户区截图: left={left}, top={top}, w={width}, h={height}")
+    except Exception as e:
+        log.warning(f"获取客户区失败，回退到 GetWindowRect: {e}")
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        width = right - left
+        height = bottom - top
+        log.debug(f"窗口截图(回退): left={left}, top={top}, w={width}, h={height}")
 
     with mss.mss() as sct:
         monitor = {"left": left, "top": top, "width": width, "height": height}
@@ -60,4 +70,10 @@ def capture_window(hwnd: int) -> np.ndarray:
 
 
 def get_window_rect(hwnd: int) -> tuple[int, int, int, int]:
-    return win32gui.GetWindowRect(hwnd)
+    """返回客户区的屏幕坐标 (left, top, right, bottom)"""
+    try:
+        client_left, client_top, client_right, client_bottom = win32gui.GetClientRect(hwnd)
+        left, top = win32gui.ClientToScreen(hwnd, (client_left, client_top))
+        return (left, top, left + client_right - client_left, top + client_bottom - client_top)
+    except Exception:
+        return win32gui.GetWindowRect(hwnd)

@@ -1,10 +1,11 @@
 window_title: "羊了个羊：星球"
 
 grid:
-  origin_x: 0
-  origin_y: 0
-  cell_width: 50
-  cell_height: 50
+  # 比例值 (0.0~1.0)，自动乘以截图宽高转为像素
+  origin_x: 0.0
+  origin_y: 0.0
+  cell_width: 0.0547    # ~105/1920
+  cell_height: 0.0954   # ~103/1080
   cols: 10
   rows: 16
 
