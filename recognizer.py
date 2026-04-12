@@ -57,24 +57,25 @@ class GridRecognizer:
     def recognize_cell(self, cell_img: np.ndarray, row: int = -1, col: int = -1) -> int:
         cell_h, cell_w = cell_img.shape[:2]
 
-        # 对格子做二值化
+        # 用二值化判断是否为空
         binary = _extract_dark_pixels(cell_img, self.dark_threshold)
-
         dark_ratio = np.count_nonzero(binary) / binary.size
         if dark_ratio < 0.02:
             log.debug(f"  cell({row},{col}): 空格 (dark_ratio={dark_ratio:.4f})")
             return 0
+
+        # 灰度匹配（保留完整亮度信息）
+        cell_gray = cv2.cvtColor(cell_img, cv2.COLOR_BGR2GRAY)
 
         best_digit = 0
         best_score = -1.0
         scores = {}
 
         for digit, tpl_raw in self.templates_raw.items():
-            # 先缩放原图到格子尺寸，再二值化（关键改动）
             tpl_resized = cv2.resize(tpl_raw, (cell_w, cell_h))
-            tpl_binary = _extract_dark_pixels(tpl_resized, self.dark_threshold)
+            tpl_gray = cv2.cvtColor(tpl_resized, cv2.COLOR_BGR2GRAY)
 
-            result = cv2.matchTemplate(binary, tpl_binary, cv2.TM_CCOEFF_NORMED)
+            result = cv2.matchTemplate(cell_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
             score = result[0][0]
             scores[digit] = score
 
