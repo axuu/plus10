@@ -27,17 +27,24 @@ class GridRecognizer:
 
         log.info(f"加载模板目录: {template_dir}, dark_threshold={dark_threshold}")
         for d in range(1, 10):
-            path = os.path.join(template_dir, f"{d}.png")
-            if os.path.exists(path):
-                tpl = cv2.imread(path)
-                if tpl is not None:
-                    self.templates[d] = _extract_dark_pixels(tpl, dark_threshold)
-                    dark_px = np.count_nonzero(self.templates[d])
-                    log.info(f"  模板 {d}: shape={tpl.shape}, 深色像素={dark_px}")
-                else:
-                    log.warning(f"  模板 {d}: 读取失败 ({path})")
+            path = None
+            for ext in (".png", ".jpg", ".jpeg", ".bmp"):
+                candidate = os.path.join(template_dir, f"{d}{ext}")
+                if os.path.exists(candidate):
+                    path = candidate
+                    break
+
+            if path is None:
+                log.warning(f"  模板 {d}: 文件不存在 ({template_dir}/{d}.*)")
+                continue
+
+            tpl = cv2.imread(path)
+            if tpl is not None:
+                self.templates[d] = _extract_dark_pixels(tpl, dark_threshold)
+                dark_px = np.count_nonzero(self.templates[d])
+                log.info(f"  模板 {d}: shape={tpl.shape}, 深色像素={dark_px}, 文件={path}")
             else:
-                log.warning(f"  模板 {d}: 文件不存在 ({path})")
+                log.warning(f"  模板 {d}: 读取失败 ({path})")
 
         log.info(f"共加载 {len(self.templates)} 个模板")
 
