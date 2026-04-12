@@ -26,7 +26,7 @@ def main():
         print(f"无法读取截图: {screenshot_path}")
         return
 
-    with open("config.yaml") as f:
+    with open("config.yaml", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     h, w = img.shape[:2]
