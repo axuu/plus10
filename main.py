@@ -157,27 +157,28 @@ def main():
                 time.sleep(2.0)
                 continue
 
-            # 求解
+            # 求解：返回完整操作序列
             log.debug(f"求解中... depth={search_depth}, beam={beam_width}")
             t0 = time.perf_counter()
-            move = solve(grid, depth=search_depth, beam_width=beam_width)
+            moves = solve(grid, depth=search_depth, beam_width=beam_width)
             t1 = time.perf_counter()
-            log.info(f"求解完成，耗时 {(t1-t0)*1000:.1f}ms, move={move}")
+            log.info(f"求解完成，耗时 {(t1-t0)*1000:.1f}ms, 步数={len(moves)}")
 
-            if move is None:
+            if not moves:
                 log.info("没有可消除的矩形，等待...")
                 time.sleep(2.0)
                 continue
 
-            r1, c1, r2, c2 = move
-            eliminated = int(np.count_nonzero(grid[r1:r2 + 1, c1:c2 + 1]))
-            total_score += eliminated
-            log.info(f"消除: ({r1},{c1})->({r2},{c2}), 本次消 {eliminated} 个, 总分 {total_score}")
-
-            # 执行鼠标操作
-            log.debug("执行鼠标拖拽...")
-            executor.execute_move(r1, c1, r2, c2)
-            log.info("鼠标操作完成")
+            # 执行完整序列（省去中间截图识别的时间）
+            for i, (r1, c1, r2, c2) in enumerate(moves):
+                if paused or not running:
+                    break
+                eliminated = int(np.count_nonzero(grid[r1:r2 + 1, c1:c2 + 1]))
+                total_score += eliminated
+                grid[r1:r2 + 1, c1:c2 + 1] = 0  # 更新本地网格
+                log.info(f"步骤 {i+1}/{len(moves)}: ({r1},{c1})->({r2},{c2}), "
+                         f"消 {eliminated} 个, 总分 {total_score}")
+                executor.execute_move(r1, c1, r2, c2)
 
     except Exception as e:
         log.error(f"程序异常: {e}")
