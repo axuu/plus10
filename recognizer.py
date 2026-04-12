@@ -60,7 +60,7 @@ class GridRecognizer:
         # 用二值化判断是否为空
         binary = _extract_dark_pixels(cell_img, self.dark_threshold)
         dark_ratio = np.count_nonzero(binary) / binary.size
-        if dark_ratio < 0.02:
+        if dark_ratio < 0.005:
             log.debug(f"  cell({row},{col}): 空格 (dark_ratio={dark_ratio:.4f})")
             return 0
 
