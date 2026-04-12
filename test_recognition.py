@@ -160,11 +160,20 @@ def diagnose(screenshot_path: str):
             if dark_ratio < 0.02:
                 print(f"    -> 判定为空 (dark_ratio < 0.02)")
             else:
-                # 灰度匹配
-                cell_gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
+                # 灰度匹配 + 中心裁剪
+                ch_, cw_ = cell.shape[:2]
+                crop = 0.2
+                cx1 = int(cw_ * crop)
+                cy1 = int(ch_ * crop)
+                cx2 = cw_ - cx1
+                cy2 = ch_ - cy1
+                cell_center = cell[cy1:cy2, cx1:cx2]
+                cell_gray = cv2.cvtColor(cell_center, cv2.COLOR_BGR2GRAY)
+                cv2.imwrite(f"debug/diag_center_{r}_{c}.png", cell_center)
                 for digit, tpl_raw in recognizer.templates_raw.items():
-                    tpl_resized = cv2.resize(tpl_raw, (cell_gray.shape[1], cell_gray.shape[0]))
-                    tpl_gray = cv2.cvtColor(tpl_resized, cv2.COLOR_BGR2GRAY)
+                    tpl_resized = cv2.resize(tpl_raw, (cw_, ch_))
+                    tpl_center = tpl_resized[cy1:cy2, cx1:cx2]
+                    tpl_gray = cv2.cvtColor(tpl_center, cv2.COLOR_BGR2GRAY)
                     result = cv2.matchTemplate(cell_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
                     score = result[0][0]
                     print(f"    vs 模板{digit}: score={score:.4f}")

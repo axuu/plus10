@@ -64,8 +64,15 @@ class GridRecognizer:
             log.debug(f"  cell({row},{col}): 空格 (dark_ratio={dark_ratio:.4f})")
             return 0
 
-        # 灰度匹配（保留完整亮度信息）
-        cell_gray = cv2.cvtColor(cell_img, cv2.COLOR_BGR2GRAY)
+        # 中心裁剪：只保留内部 60% 区域（去掉圆形边框，聚焦数字）
+        crop = 0.2  # 每边裁掉 20%
+        cx1 = int(cell_w * crop)
+        cy1 = int(cell_h * crop)
+        cx2 = cell_w - cx1
+        cy2 = cell_h - cy1
+
+        cell_center = cell_img[cy1:cy2, cx1:cx2]
+        cell_gray = cv2.cvtColor(cell_center, cv2.COLOR_BGR2GRAY)
 
         best_digit = 0
         best_score = -1.0
@@ -73,7 +80,8 @@ class GridRecognizer:
 
         for digit, tpl_raw in self.templates_raw.items():
             tpl_resized = cv2.resize(tpl_raw, (cell_w, cell_h))
-            tpl_gray = cv2.cvtColor(tpl_resized, cv2.COLOR_BGR2GRAY)
+            tpl_center = tpl_resized[cy1:cy2, cx1:cx2]
+            tpl_gray = cv2.cvtColor(tpl_center, cv2.COLOR_BGR2GRAY)
 
             result = cv2.matchTemplate(cell_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
             score = result[0][0]
