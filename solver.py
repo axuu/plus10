@@ -9,7 +9,7 @@ def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int, in
     """找出所有和为10且至少包含2个非空数字的矩形。
 
     Returns:
-        list of (r1, c1, r2, c2, count) — count 为矩形内非零元素数量
+        list of (r1, c1, r2, c2, count) 按 count 降序排列
     """
     rows, cols = grid.shape
 
@@ -49,6 +49,11 @@ def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int, in
     valid = (rect_sum == 10) & (rect_cnt >= 2)
     indices = np.nonzero(valid)[0]
 
+    # 按消除数降序排列
+    counts = rect_cnt[indices]
+    order = np.argsort(-counts)
+    indices = indices[order]
+
     return [
         (int(r1[i]), int(c1[i]), int(r2[i]), int(c2[i]), int(rect_cnt[i]))
         for i in indices
@@ -62,29 +67,29 @@ def _apply_move(grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> np.ndar
 
 
 def solve(
-    grid: np.ndarray, depth: int = 4, beam_width: int = 50,
+    grid: np.ndarray, depth: int = 3, beam_width: int = 15,
+    branch_limit: int = 10,
 ) -> tuple[int, int, int, int] | None:
     """层级 beam search 求解最优第一步。
-
-    每层展开所有 beam 状态的合法操作，按累计消除数排序，
-    只保留 beam_width 条最优路径。复杂度 O(depth × beam_width)。
 
     Args:
         grid: 16x10 数组
         depth: 前瞻步数
         beam_width: 每层保留的最优路径数
+        branch_limit: 每个状态最多展开的候选操作数
 
     Returns:
         (r1, c1, r2, c2) 最优矩形，或 None
     """
-    # 每条路径: (累计消除数, 第一步操作, 当前棋盘)
+    # (累计消除数, 第一步操作, 当前棋盘)
     beam = [(0, None, grid)]
 
     for d in range(depth):
         next_candidates = []
 
         for score, first_move, g in beam:
-            rectangles = find_valid_rectangles(g)
+            # 已经按消除数降序排列，只取前 branch_limit 个
+            rectangles = find_valid_rectangles(g)[:branch_limit]
             for r1, c1, r2, c2, cnt in rectangles:
                 new_grid = _apply_move(g, r1, c1, r2, c2)
                 fm = first_move if first_move is not None else (r1, c1, r2, c2)
@@ -101,6 +106,5 @@ def solve(
         return None
 
     best_score, best_move, _ = beam[0]
-    log.info(f"beam search: depth={depth}, beam={beam_width}, "
-             f"best_score={best_score}, move={best_move}")
+    log.info(f"solve: depth={depth}, best_score={best_score}, move={best_move}")
     return best_move
