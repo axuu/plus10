@@ -62,30 +62,11 @@ def _apply_move(grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> np.ndar
 
 
 def _estimate_potential(grid: np.ndarray) -> float:
-    """估算剩余局面的消除潜力（快速启发式）。"""
-    candidates = find_valid_rectangles(grid)
-    if not candidates:
-        return 0.0
-
-    # 取最大的几个不重叠消除作为潜力估算
-    used = np.zeros_like(grid, dtype=bool)
-    potential = 0
-    # 按消除数排序
-    scored = []
-    for rect in candidates:
-        cnt = _count_nonzero_in_rect(grid, *rect)
-        scored.append((cnt, rect))
-    scored.sort(reverse=True)
-
-    for cnt, (r1, c1, r2, c2) in scored[:20]:
-        # 检查是否与已选的重叠
-        region = used[r1:r2+1, c1:c2+1]
-        if np.any(region):
-            continue
-        used[r1:r2+1, c1:c2+1] = True
-        potential += cnt
-
-    return potential
+    """估算剩余局面的消除潜力（轻量启发式，不调用 find_valid_rectangles）。"""
+    # 直接返回剩余非零格子数的比例作为潜力估算
+    # 非零格子越多，潜在消除机会越多
+    remaining = int(np.count_nonzero(grid))
+    return remaining * 0.15
 
 
 def _dfs(
