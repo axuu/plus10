@@ -5,8 +5,12 @@ import logging
 log = logging.getLogger("solver")
 
 
-def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int]]:
-    """找出所有和为10且至少包含2个非空数字的矩形（向量化实现）。"""
+def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int, int]]:
+    """找出所有和为10且至少包含2个非空数字的矩形。
+
+    Returns:
+        list of (r1, c1, r2, c2, count) — count 为矩形内非零元素数量
+    """
     rows, cols = grid.shape
 
     sum_prefix = np.zeros((rows + 1, cols + 1), dtype=np.int32)
@@ -46,13 +50,9 @@ def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int]]:
     indices = np.nonzero(valid)[0]
 
     return [
-        (int(r1[i]), int(c1[i]), int(r2[i]), int(c2[i]))
+        (int(r1[i]), int(c1[i]), int(r2[i]), int(c2[i]), int(rect_cnt[i]))
         for i in indices
     ]
-
-
-def _count_nonzero_in_rect(grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> int:
-    return int(np.count_nonzero(grid[r1:r2 + 1, c1:c2 + 1]))
 
 
 def _apply_move(grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> np.ndarray:
@@ -61,65 +61,46 @@ def _apply_move(grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> np.ndar
     return new_grid
 
 
-def _estimate_potential(grid: np.ndarray) -> float:
-    """估算剩余局面的消除潜力（轻量启发式，不调用 find_valid_rectangles）。"""
-    # 直接返回剩余非零格子数的比例作为潜力估算
-    # 非零格子越多，潜在消除机会越多
-    remaining = int(np.count_nonzero(grid))
-    return remaining * 0.15
-
-
-def _dfs(
-    grid: np.ndarray, depth: int, current_score: int, beam_width: int,
-) -> tuple[float, tuple | None]:
-    """DFS + Beam Search 搜索最优消除序列的第一步。"""
-    if depth == 0:
-        # 叶子节点：当前分 + 未来潜力估算（折扣）
-        potential = _estimate_potential(grid)
-        return current_score + potential * 0.3, None
-
-    candidates = find_valid_rectangles(grid)
-    if not candidates:
-        return current_score, None
-
-    # 排序：按消除数降序；同消除数优先密度高（小面积）的
-    candidates.sort(
-        key=lambda r: (
-            _count_nonzero_in_rect(grid, r[0], r[1], r[2], r[3]),
-            -((r[2] - r[0] + 1) * (r[3] - r[1] + 1)),
-        ),
-        reverse=True,
-    )
-    candidates = candidates[:beam_width]
-
-    best_score = current_score
-    best_move = None
-
-    for rect in candidates:
-        r1, c1, r2, c2 = rect
-        eliminated = _count_nonzero_in_rect(grid, r1, c1, r2, c2)
-        new_grid = _apply_move(grid, r1, c1, r2, c2)
-        sub_score, _ = _dfs(new_grid, depth - 1, current_score + eliminated, beam_width)
-
-        if sub_score > best_score:
-            best_score = sub_score
-            best_move = rect
-
-    return best_score, best_move
-
-
 def solve(
-    grid: np.ndarray, depth: int = 4, beam_width: int = 20,
+    grid: np.ndarray, depth: int = 4, beam_width: int = 50,
 ) -> tuple[int, int, int, int] | None:
-    """求解当前局面的最优第一步消除。
+    """层级 beam search 求解最优第一步。
+
+    每层展开所有 beam 状态的合法操作，按累计消除数排序，
+    只保留 beam_width 条最优路径。复杂度 O(depth × beam_width)。
 
     Args:
         grid: 16x10 数组
-        depth: 前瞻搜索深度（默认4）
-        beam_width: 每层最多探索的候选数量（默认20）
+        depth: 前瞻步数
+        beam_width: 每层保留的最优路径数
 
     Returns:
-        (r1, c1, r2, c2) 最优矩形，或 None 表示无合法消除
+        (r1, c1, r2, c2) 最优矩形，或 None
     """
-    _, best_move = _dfs(grid, depth, 0, beam_width)
+    # 每条路径: (累计消除数, 第一步操作, 当前棋盘)
+    beam = [(0, None, grid)]
+
+    for d in range(depth):
+        next_candidates = []
+
+        for score, first_move, g in beam:
+            rectangles = find_valid_rectangles(g)
+            for r1, c1, r2, c2, cnt in rectangles:
+                new_grid = _apply_move(g, r1, c1, r2, c2)
+                fm = first_move if first_move is not None else (r1, c1, r2, c2)
+                next_candidates.append((score + cnt, fm, new_grid))
+
+        if not next_candidates:
+            break
+
+        # 按累计消除数降序，保留 beam_width 条
+        next_candidates.sort(key=lambda x: x[0], reverse=True)
+        beam = next_candidates[:beam_width]
+
+    if not beam or beam[0][1] is None:
+        return None
+
+    best_score, best_move, _ = beam[0]
+    log.info(f"beam search: depth={depth}, beam={beam_width}, "
+             f"best_score={best_score}, move={best_move}")
     return best_move
