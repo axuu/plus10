@@ -75,32 +75,103 @@ def test_screenshot(screenshot_path: str):
     total = grid_cfg["rows"] * grid_cfg["cols"]
     print(f"非空格子: {non_zero}/{total}")
 
-    # 保存可视化
+    # 保存可视化 (比例值转像素)
+    h, w = screenshot.shape[:2]
+    ox = int(grid_cfg["origin_x"] * w) if grid_cfg["origin_x"] <= 1.0 else int(grid_cfg["origin_x"])
+    oy = int(grid_cfg["origin_y"] * h) if grid_cfg["origin_y"] <= 1.0 else int(grid_cfg["origin_y"])
+    cw = int(grid_cfg["cell_width"] * w) if grid_cfg["cell_width"] <= 1.0 else int(grid_cfg["cell_width"])
+    ch = int(grid_cfg["cell_height"] * h) if grid_cfg["cell_height"] <= 1.0 else int(grid_cfg["cell_height"])
+
     vis = screenshot.copy()
     for r in range(grid_cfg["rows"]):
         for c in range(grid_cfg["cols"]):
-            x = grid_cfg["origin_x"] + c * grid_cfg["cell_width"]
-            y = grid_cfg["origin_y"] + r * grid_cfg["cell_height"]
+            x = ox + c * cw
+            y = oy + r * ch
 
-            # 画格子边框
-            cv2.rectangle(
-                vis,
-                (x, y),
-                (x + grid_cfg["cell_width"], y + grid_cfg["cell_height"]),
-                (0, 255, 0),
-                1,
-            )
+            cv2.rectangle(vis, (x, y), (x + cw, y + ch), (0, 255, 0), 1)
 
-            # 标注识别结果
             v = grid[r][c]
             if v > 0:
-                tx = x + grid_cfg["cell_width"] // 2 - 8
-                ty = y + grid_cfg["cell_height"] // 2 + 8
+                tx = x + cw // 2 - 8
+                ty = y + ch // 2 + 8
                 cv2.putText(vis, str(v), (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
     out_path = "test_result.png"
     cv2.imwrite(out_path, vis)
     print(f"\n可视化已保存到: {out_path}")
+
+
+def diagnose(screenshot_path: str):
+    """诊断识别问题：显示模板加载情况和前几个格子的详细匹配信息。"""
+    config = load_config()
+    grid_cfg = config["grid"]
+    recog_cfg = config["recognition"]
+
+    print(f"=== 配置 ===")
+    print(f"  confidence_threshold: {recog_cfg['confidence_threshold']}")
+    print(f"  dark_threshold: {recog_cfg['dark_threshold']}")
+
+    recognizer = GridRecognizer(
+        template_dir="templates",
+        confidence_threshold=recog_cfg["confidence_threshold"],
+        dark_threshold=recog_cfg["dark_threshold"],
+    )
+
+    print(f"\n=== 模板 ===")
+    print(f"  已加载: {list(recognizer.templates.keys())}")
+    for d, tpl in recognizer.templates.items():
+        print(f"  模板 {d}: shape={tpl.shape}, 非零像素={np.count_nonzero(tpl)}/{tpl.size} ({np.count_nonzero(tpl)/tpl.size*100:.1f}%)")
+
+    screenshot = cv2.imread(screenshot_path)
+    if screenshot is None:
+        print(f"无法读取截图: {screenshot_path}")
+        return
+
+    h, w = screenshot.shape[:2]
+    ox = int(grid_cfg["origin_x"] * w) if grid_cfg["origin_x"] <= 1.0 else int(grid_cfg["origin_x"])
+    oy = int(grid_cfg["origin_y"] * h) if grid_cfg["origin_y"] <= 1.0 else int(grid_cfg["origin_y"])
+    cw = int(grid_cfg["cell_width"] * w) if grid_cfg["cell_width"] <= 1.0 else int(grid_cfg["cell_width"])
+    ch = int(grid_cfg["cell_height"] * h) if grid_cfg["cell_height"] <= 1.0 else int(grid_cfg["cell_height"])
+
+    print(f"\n=== 网格参数 (像素) ===")
+    print(f"  origin: ({ox}, {oy}), cell: {cw}x{ch}")
+
+    # 诊断前 5 个格子
+    from recognizer import _extract_dark_pixels
+    print(f"\n=== 前5个格子诊断 ===")
+    os.makedirs("debug", exist_ok=True)
+    count = 0
+    for r in range(grid_cfg["rows"]):
+        for c in range(grid_cfg["cols"]):
+            if count >= 5:
+                break
+            x = ox + c * cw
+            y = oy + r * ch
+            cell = screenshot[y:y+ch, x:x+cw]
+            binary = _extract_dark_pixels(cell, recog_cfg["dark_threshold"])
+            dark_ratio = np.count_nonzero(binary) / binary.size
+
+            print(f"\n  cell({r},{c}): 原图shape={cell.shape}, dark_ratio={dark_ratio:.4f}")
+
+            # 保存格子图片和二值化图片
+            cv2.imwrite(f"debug/diag_cell_{r}_{c}.png", cell)
+            cv2.imwrite(f"debug/diag_bin_{r}_{c}.png", binary)
+
+            if dark_ratio < 0.02:
+                print(f"    -> 判定为空 (dark_ratio < 0.02)")
+            else:
+                # 逐个模板匹配
+                for digit, tpl in recognizer.templates.items():
+                    tpl_resized = cv2.resize(tpl, (binary.shape[1], binary.shape[0]))
+                    result = cv2.matchTemplate(binary, tpl_resized, cv2.TM_CCOEFF_NORMED)
+                    score = result[0][0]
+                    print(f"    vs 模板{digit}: score={score:.4f}")
+
+            count += 1
+        if count >= 5:
+            break
+
+    print(f"\n格子图片已保存到 debug/diag_cell_*.png 和 debug/diag_bin_*.png")
 
 
 def test_accuracy(test_data_dir: str):
@@ -217,6 +288,8 @@ def main():
 
     if mode == "screenshot" and len(sys.argv) >= 3:
         test_screenshot(sys.argv[2])
+    elif mode == "diagnose" and len(sys.argv) >= 3:
+        diagnose(sys.argv[2])
     elif mode == "accuracy" and len(sys.argv) >= 3:
         test_accuracy(sys.argv[2])
     elif mode == "extract" and len(sys.argv) >= 4:
