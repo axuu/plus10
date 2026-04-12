@@ -31,25 +31,26 @@ class GridRecognizer:
 
         log.info(f"加载模板目录: {template_dir}, dark_threshold={dark_threshold}")
         for d in range(1, 10):
-            path = None
-            for ext in (".png", ".jpg", ".jpeg", ".bmp"):
-                candidate = os.path.join(template_dir, f"{d}{ext}")
-                if os.path.exists(candidate):
-                    path = candidate
-                    break
+            # 支持多模板: d.png, d_2.png, d_3.png ...
+            variants = [str(d)] + [f"{d}_{i}" for i in range(2, 10)]
+            loaded = []
+            for name in variants:
+                for ext in (".png", ".jpg", ".jpeg", ".bmp"):
+                    candidate = os.path.join(template_dir, f"{name}{ext}")
+                    if os.path.exists(candidate):
+                        tpl = cv2.imread(candidate)
+                        if tpl is not None:
+                            loaded.append(tpl)
+                            log.info(f"  模板 {d}: shape={tpl.shape}, 文件={candidate}")
+                        break
 
-            if path is None:
-                log.warning(f"  模板 {d}: 文件不存在 ({template_dir}/{d}.*)")
-                continue
-
-            tpl = cv2.imread(path)
-            if tpl is not None:
-                self.templates_raw[d] = tpl
-                log.info(f"  模板 {d}: shape={tpl.shape}, 文件={path}")
+            if loaded:
+                self.templates_raw[d] = loaded
             else:
-                log.warning(f"  模板 {d}: 读取失败 ({path})")
+                log.warning(f"  模板 {d}: 文件不存在 ({template_dir}/{d}.*)")
 
-        log.info(f"共加载 {len(self.templates_raw)} 个模板")
+        total = sum(len(v) for v in self.templates_raw.values())
+        log.info(f"共加载 {total} 个模板 ({len(self.templates_raw)} 个数字)")
 
         # 兼容旧代码引用
         self.templates = self.templates_raw
@@ -78,17 +79,21 @@ class GridRecognizer:
         best_score = -1.0
         scores = {}
 
-        for digit, tpl_raw in self.templates_raw.items():
-            tpl_resized = cv2.resize(tpl_raw, (cell_w, cell_h))
-            tpl_center = tpl_resized[cy1:cy2, cx1:cx2]
-            tpl_gray = cv2.cvtColor(tpl_center, cv2.COLOR_BGR2GRAY)
+        for digit, tpl_list in self.templates_raw.items():
+            digit_best = -1.0
+            for tpl_raw in tpl_list:
+                tpl_resized = cv2.resize(tpl_raw, (cell_w, cell_h))
+                tpl_center = tpl_resized[cy1:cy2, cx1:cx2]
+                tpl_gray = cv2.cvtColor(tpl_center, cv2.COLOR_BGR2GRAY)
 
-            result = cv2.matchTemplate(cell_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
-            score = result[0][0]
-            scores[digit] = score
+                result = cv2.matchTemplate(cell_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
+                score = result[0][0]
+                if score > digit_best:
+                    digit_best = score
 
-            if score > best_score:
-                best_score = score
+            scores[digit] = digit_best
+            if digit_best > best_score:
+                best_score = digit_best
                 best_digit = digit
 
         if best_score < self.confidence_threshold:

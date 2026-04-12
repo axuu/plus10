@@ -63,13 +63,18 @@ def main():
     print()
 
     scores = {}
-    for d, tpl in rec.templates_raw.items():
-        t = cv2.resize(tpl, (cell.shape[1], cell.shape[0]))
-        t_center = t[cy1:cy2, cx1:cx2]
-        t_gray = cv2.cvtColor(t_center, cv2.COLOR_BGR2GRAY)
-        score = cv2.matchTemplate(cell_gray, t_gray, cv2.TM_CCOEFF_NORMED)[0][0]
-        scores[d] = score
-        print(f"  模板{d}: {score:.4f}")
+    for d, tpl_list in rec.templates_raw.items():
+        digit_best = -1.0
+        for i, tpl in enumerate(tpl_list):
+            t = cv2.resize(tpl, (cell.shape[1], cell.shape[0]))
+            t_center = t[cy1:cy2, cx1:cx2]
+            t_gray = cv2.cvtColor(t_center, cv2.COLOR_BGR2GRAY)
+            score = cv2.matchTemplate(cell_gray, t_gray, cv2.TM_CCOEFF_NORMED)[0][0]
+            suffix = f"({i+1})" if len(tpl_list) > 1 else ""
+            print(f"  模板{d}{suffix}: {score:.4f}")
+            if score > digit_best:
+                digit_best = score
+        scores[d] = digit_best
 
     best = max(scores, key=scores.get)
     print(f"\n最高: 模板{best} = {scores[best]:.4f}")
