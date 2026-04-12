@@ -1,15 +1,20 @@
 # solver.py
 import numpy as np
 import logging
+import time
 
 log = logging.getLogger("solver")
 
 
-def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int, int]]:
+def find_valid_rectangles(grid: np.ndarray, top_n: int = 0) -> list[tuple[int, int, int, int, int]]:
     """找出所有和为10且至少包含2个非空数字的矩形。
 
+    Args:
+        grid: 棋盘
+        top_n: 只返回消除数最多的前 N 个（0=全部）
+
     Returns:
-        list of (r1, c1, r2, c2, count) 按 count 降序排列
+        list of (r1, c1, r2, c2, count) 按 count 降序
     """
     rows, cols = grid.shape
 
@@ -46,21 +51,18 @@ def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int, in
         + cnt_prefix[r1, c1]
     )
 
-    # 面积
-    areas = (r2 - r1 + 1) * (c2 - c1 + 1)
-
     valid = (rect_sum == 10) & (rect_cnt >= 2)
     indices = np.nonzero(valid)[0]
 
+    if len(indices) == 0:
+        return []
+
     counts = rect_cnt[indices]
-    rect_areas = areas[indices]
+    order = np.argsort(-counts)
 
-    # 密度 = 消除数 / 面积，密度越高越好（少留空洞）
-    densities = counts.astype(float) / rect_areas
+    if top_n > 0:
+        order = order[:top_n]
 
-    # 按 (消除数, 密度) 联合排序
-    # 主排序: 消除数降序; 副排序: 密度降序
-    order = np.lexsort((-densities, -counts))
     indices = indices[order]
 
     return [
@@ -69,50 +71,90 @@ def find_valid_rectangles(grid: np.ndarray) -> list[tuple[int, int, int, int, in
     ]
 
 
-def _apply_move(grid: np.ndarray, r1: int, c1: int, r2: int, c2: int) -> np.ndarray:
-    new_grid = grid.copy()
-    new_grid[r1:r2 + 1, c1:c2 + 1] = 0
-    return new_grid
+def _simulate_game(grid: np.ndarray, rng: np.random.Generator) -> tuple[list, int]:
+    """模拟一局完整游戏（随机加权贪心）。
+
+    从 top 5 中按消除数的平方为权重随机选择，兼顾贪心和探索。
+
+    Returns:
+        (操作序列, 总消除数)
+    """
+    g = grid.copy()
+    moves = []
+    total = 0
+
+    while True:
+        rects = find_valid_rectangles(g, top_n=8)
+        if not rects:
+            break
+
+        # 加权随机选择：消除数的平方作为权重
+        weights = np.array([cnt ** 2 for _, _, _, _, cnt in rects], dtype=float)
+        weights /= weights.sum()
+
+        idx = rng.choice(len(rects), p=weights)
+        r1, c1, r2, c2, cnt = rects[idx]
+
+        eliminated = int(np.count_nonzero(g[r1:r2+1, c1:c2+1]))
+        moves.append((r1, c1, r2, c2))
+        total += eliminated
+        g[r1:r2+1, c1:c2+1] = 0
+
+    return moves, total
 
 
 def solve(
-    grid: np.ndarray, depth: int = 5, beam_width: int = 15,
-    branch_limit: int = 10,
+    grid: np.ndarray, n_simulations: int = 30, time_budget: float = 3.0,
+    **kwargs,
 ) -> list[tuple[int, int, int, int]]:
-    """层级 beam search 求解最优操作序列。
-
-    返回完整操作序列而非单步，调用方可以一次性执行所有步骤。
+    """蒙特卡洛规划：模拟多局完整游戏，选最优序列。
 
     Args:
         grid: 16x10 数组
-        depth: 前瞻步数（也是返回的最大序列长度）
-        beam_width: 每层保留的最优路径数
-        branch_limit: 每个状态最多展开的候选操作数
+        n_simulations: 最大模拟次数
+        time_budget: 最大规划时间（秒）
 
     Returns:
-        [(r1, c1, r2, c2), ...] 操作序列，空列表表示无合法消除
+        [(r1, c1, r2, c2), ...] 完整操作序列
     """
-    # (累计消除数, 操作序列, 当前棋盘)
-    beam = [(0, (), grid)]
-
-    for d in range(depth):
-        next_candidates = []
-
-        for score, moves, g in beam:
-            rectangles = find_valid_rectangles(g)[:branch_limit]
-            for r1, c1, r2, c2, cnt in rectangles:
-                new_grid = _apply_move(g, r1, c1, r2, c2)
-                next_candidates.append((score + cnt, moves + ((r1, c1, r2, c2),), new_grid))
-
-        if not next_candidates:
-            break
-
-        next_candidates.sort(key=lambda x: x[0], reverse=True)
-        beam = next_candidates[:beam_width]
-
-    if not beam or not beam[0][1]:
+    if int(np.count_nonzero(grid)) == 0:
         return []
 
-    best_score, best_moves, _ = beam[0]
-    log.info(f"solve: depth={depth}, best_score={best_score}, steps={len(best_moves)}")
-    return list(best_moves)
+    rng = np.random.default_rng()
+    best_moves = []
+    best_score = 0
+    t0 = time.perf_counter()
+
+    # 先跑一次纯贪心（不随机）作为基线
+    g = grid.copy()
+    greedy_moves = []
+    greedy_score = 0
+    while True:
+        rects = find_valid_rectangles(g, top_n=1)
+        if not rects:
+            break
+        r1, c1, r2, c2, cnt = rects[0]
+        eliminated = int(np.count_nonzero(g[r1:r2+1, c1:c2+1]))
+        greedy_moves.append((r1, c1, r2, c2))
+        greedy_score += eliminated
+        g[r1:r2+1, c1:c2+1] = 0
+
+    best_moves = greedy_moves
+    best_score = greedy_score
+    log.info(f"贪心基线: {greedy_score} 分, {len(greedy_moves)} 步")
+
+    # 蒙特卡洛模拟
+    for i in range(n_simulations):
+        if time.perf_counter() - t0 > time_budget:
+            log.info(f"时间预算用完，完成 {i} 次模拟")
+            break
+
+        moves, score = _simulate_game(grid, rng)
+        if score > best_score:
+            best_score = score
+            best_moves = moves
+            log.info(f"模拟 {i+1}: 新最优 {score} 分, {len(moves)} 步")
+
+    elapsed = time.perf_counter() - t0
+    log.info(f"规划完成: {best_score} 分, {len(best_moves)} 步, 耗时 {elapsed:.1f}s")
+    return best_moves
