@@ -19,10 +19,10 @@ class Executor:
     def __init__(
         self,
         hwnd: int,
-        grid_origin_x: int,
-        grid_origin_y: int,
-        cell_width: int,
-        cell_height: int,
+        grid_origin_x: float,
+        grid_origin_y: float,
+        cell_width: float,
+        cell_height: float,
         inward_shrink: int = 5,
         animation_delay: float = 0.5,
     ):
@@ -37,10 +37,28 @@ class Executor:
                  f"cell=({cell_width}x{cell_height}), shrink={inward_shrink}, delay={animation_delay}")
 
     def _cell_to_pixel(self, row: int, col: int) -> tuple[int, int]:
-        left, top, _, _ = win32gui.GetWindowRect(self.hwnd)
-        px = left + self.grid_origin_x + col * self.cell_width + self.cell_width // 2
-        py = top + self.grid_origin_y + row * self.cell_height + self.cell_height // 2
-        log.debug(f"  cell({row},{col}) -> pixel({px},{py}) [window_left={left}, window_top={top}]")
+        # 获取客户区屏幕坐标（不含标题栏/边框）
+        try:
+            cr = win32gui.GetClientRect(self.hwnd)
+            client_left, client_top = win32gui.ClientToScreen(self.hwnd, (cr[0], cr[1]))
+            client_w = cr[2] - cr[0]
+            client_h = cr[3] - cr[1]
+        except Exception:
+            left, top, right, bottom = win32gui.GetWindowRect(self.hwnd)
+            client_left, client_top = left, top
+            client_w = right - left
+            client_h = bottom - top
+
+        # 比例值转像素（浮点运算避免漂移）
+        ox = self.grid_origin_x * client_w if self.grid_origin_x <= 1.0 else self.grid_origin_x
+        oy = self.grid_origin_y * client_h if self.grid_origin_y <= 1.0 else self.grid_origin_y
+        cw = self.cell_width * client_w if self.cell_width <= 1.0 else self.cell_width
+        ch = self.cell_height * client_h if self.cell_height <= 1.0 else self.cell_height
+
+        # 格子中心像素坐标
+        px = int(round(client_left + ox + (col + 0.5) * cw))
+        py = int(round(client_top + oy + (row + 0.5) * ch))
+        log.debug(f"  cell({row},{col}) -> pixel({px},{py}) [client=({client_left},{client_top})]")
         return px, py
 
     def _ensure_foreground(self) -> bool:

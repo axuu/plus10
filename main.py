@@ -54,7 +54,7 @@ def main():
             confidence_threshold=config["recognition"]["confidence_threshold"],
             dark_threshold=config["recognition"].get("dark_threshold", 80),
         )
-        log.info(f"识别器初始化完成，加载了 {len(recognizer.templates)} 个模板")
+        log.info(f"识别器初始化完成，加载了 {len(recognizer.templates_raw)} 个数字模板")
 
         # 初始化执行器
         grid_cfg = config["grid"]
@@ -143,15 +143,6 @@ def main():
                 os.makedirs("debug", exist_ok=True)
                 cv2.imwrite("debug/screenshot.png", screenshot)
                 np.savetxt("debug/grid.txt", grid, fmt="%d", delimiter=" ")
-                for r in range(grid_cfg["rows"]):
-                    for c in range(grid_cfg["cols"]):
-                        x = grid_cfg["origin_x"] + c * grid_cfg["cell_width"]
-                        y = grid_cfg["origin_y"] + r * grid_cfg["cell_height"]
-                        cell = screenshot[y:y + grid_cfg["cell_height"], x:x + grid_cfg["cell_width"]]
-                        cv2.imwrite(f"debug/cell_{r:02d}_{c:02d}_val{grid[r][c]}.png", cell)
-                        from recognizer import _extract_dark_pixels
-                        binary = _extract_dark_pixels(cell, config["recognition"].get("dark_threshold", 80))
-                        cv2.imwrite(f"debug/bin_{r:02d}_{c:02d}_val{grid[r][c]}.png", binary)
                 log.info("debug 信息已保存到 debug/ 目录")
 
             # 打印矩阵
