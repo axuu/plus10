@@ -215,11 +215,11 @@ def main():
     cv2.imwrite(out_path, vis)
     print(f"\n可视化已保存到: {out_path}")
 
-    # 更新 config.yaml
-    config["grid"]["origin_x"] = round(ox_ratio, 6)
-    config["grid"]["origin_y"] = round(oy_ratio, 6)
-    config["grid"]["cell_width"] = round(cw_ratio, 6)
-    config["grid"]["cell_height"] = round(ch_ratio, 6)
+    # 更新 config.yaml (转为 Python float，避免 numpy 类型写入 YAML)
+    config["grid"]["origin_x"] = float(round(ox_ratio, 6))
+    config["grid"]["origin_y"] = float(round(oy_ratio, 6))
+    config["grid"]["cell_width"] = float(round(cw_ratio, 6))
+    config["grid"]["cell_height"] = float(round(ch_ratio, 6))
 
     with open("config.yaml", "w", encoding="utf-8") as f:
         yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
