@@ -44,12 +44,31 @@ def find_game_window(title: str) -> int:
 
 
 def capture_window(hwnd: int) -> np.ndarray:
-    """截取窗口客户区（不含标题栏/边框，与 executor 坐标系一致）"""
+    """截取窗口客户区，自动排除任务栏区域"""
+    # 获取客户区屏幕坐标
     cr_left, cr_top, cr_right, cr_bottom = win32gui.GetClientRect(hwnd)
     left, top = win32gui.ClientToScreen(hwnd, (cr_left, cr_top))
     width = cr_right - cr_left
     height = cr_bottom - cr_top
-    log.debug(f"客户区截图: left={left}, top={top}, w={width}, h={height}")
+
+    # 获取工作区（屏幕减去任务栏）并裁剪
+    try:
+        import win32api
+        monitor = win32api.MonitorFromWindow(hwnd, 0)
+        info = win32api.GetMonitorInfo(monitor)
+        work = info["Work"]  # (left, top, right, bottom)
+        clipped_bottom = min(top + height, work[3])
+        clipped_right = min(left + width, work[2])
+        clipped_left = max(left, work[0])
+        clipped_top = max(top, work[1])
+        width = clipped_right - clipped_left
+        height = clipped_bottom - clipped_top
+        left = clipped_left
+        top = clipped_top
+        log.debug(f"客户区截图(裁剪到工作区): left={left}, top={top}, w={width}, h={height}, work_area={work}")
+    except Exception as e:
+        log.warning(f"获取工作区失败，使用完整客户区: {e}")
+        log.debug(f"客户区截图: left={left}, top={top}, w={width}, h={height}")
 
     if width <= 0 or height <= 0:
         raise RuntimeError(f"截图区域无效: {width}x{height}")

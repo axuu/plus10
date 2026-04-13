@@ -25,25 +25,11 @@ log = logging.getLogger("main")
 
 
 def load_config(path: str = "config.yaml") -> dict:
+    log.info(f"加载配置: {path}")
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def save_config(config: dict, path: str = "config.yaml"):
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
-
-
-def auto_calibrate_grid(screenshot: np.ndarray, config: dict) -> bool:
-    """用截图自动标定网格位置，更新 config 并保存。返回是否成功。"""
-    from auto_calibrate import auto_calibrate_grid as _calibrate
-    ok = _calibrate(screenshot, config, save_func=save_config)
-    if ok:
-        log.info(f"标定完成: origin=({config['grid']['origin_x']}, {config['grid']['origin_y']}), "
-                 f"cell=({config['grid']['cell_width']} x {config['grid']['cell_height']})")
-    else:
-        log.warning("自动标定失败")
-    return ok
+        config = yaml.safe_load(f)
+    log.debug(f"配置内容: {config}")
+    return config
 
 
 def main():
@@ -51,31 +37,28 @@ def main():
         log.info("========== 程序启动 ==========")
 
         set_dpi_aware()
+        log.info("DPI 设置完成")
+
         config = load_config()
 
+        # 查找窗口
         title = config["window_title"]
+        log.info(f"正在查找窗口: {title}")
         hwnd = find_game_window(title)
         log.info(f"找到窗口: hwnd={hwnd}")
 
         # 初始化识别器
+        log.info("初始化识别器...")
         recognizer = GridRecognizer(
             template_dir="templates",
             confidence_threshold=config["recognition"]["confidence_threshold"],
             dark_threshold=config["recognition"].get("dark_threshold", 80),
         )
-        log.info(f"识别器: {len(recognizer.templates_raw)} 个数字模板")
-
-        # 自动标定：截图并检测网格位置
-        log.info("自动标定网格位置...")
-        screenshot = capture_window(hwnd)
-        if auto_calibrate_grid(screenshot, config):
-            config = load_config()  # 重新加载更新后的配置
-        else:
-            log.info("使用现有配置")
-
-        grid_cfg = config["grid"]
+        log.info(f"识别器初始化完成，加载了 {len(recognizer.templates_raw)} 个数字模板")
 
         # 初始化执行器
+        grid_cfg = config["grid"]
+        log.info(f"初始化执行器... grid_cfg={grid_cfg}")
         executor = Executor(
             hwnd=hwnd,
             grid_origin_x=grid_cfg["origin_x"],
@@ -85,12 +68,20 @@ def main():
             inward_shrink=config["executor"]["inward_shrink"],
             animation_delay=config["executor"]["animation_delay"],
         )
+        log.info("执行器初始化完成")
+
+        search_depth = config["solver"]["search_depth"]
+        beam_width = config["solver"].get("beam_width", 15)
+        log.info(f"搜索参数: depth={search_depth}, beam_width={beam_width}")
 
         paused = False
         total_score = 0
-        running = True
 
+        # 注册快捷键
         hotkeys = config["hotkeys"]
+        log.info(f"快捷键: 暂停={hotkeys['pause']}, 退出={hotkeys['quit']}")
+
+        running = True
 
         def on_quit():
             nonlocal running
@@ -104,7 +95,7 @@ def main():
 
         keyboard.add_hotkey(hotkeys["quit"], on_quit)
         keyboard.add_hotkey(hotkeys["pause"], on_pause)
-        log.info(f"快捷键: 暂停={hotkeys['pause']}, 退出={hotkeys['quit']}")
+        log.info("快捷键注册完成，开始主循环")
 
         loop_count = 0
         while running:
@@ -114,20 +105,25 @@ def main():
                 time.sleep(0.1)
                 continue
 
-            # 如果窗口不在前台，自动激活
+            # 检查窗口是否在前台
             fg = win32gui.GetForegroundWindow()
             if fg != hwnd:
-                try:
-                    win32gui.SetForegroundWindow(hwnd)
-                    time.sleep(0.3)
-                except Exception:
-                    time.sleep(0.5)
-                    continue
+                log.debug(f"循环 #{loop_count}: 窗口不在前台 (fg={fg}, hwnd={hwnd})，等待...")
+                time.sleep(0.5)
+                continue
 
             log.info(f"===== 循环 #{loop_count} =====")
 
-            # 截图 + 识别
+            # 截图
+            log.debug("截图中...")
+            t0 = time.perf_counter()
             screenshot = capture_window(hwnd)
+            t1 = time.perf_counter()
+            log.info(f"截图完成: {screenshot.shape}, 耗时 {(t1-t0)*1000:.1f}ms")
+
+            # 识别矩阵
+            log.debug("识别矩阵中...")
+            t0 = time.perf_counter()
             grid = recognizer.extract_grid(
                 screenshot,
                 origin_x=grid_cfg["origin_x"],
@@ -137,46 +133,51 @@ def main():
                 cols=grid_cfg["cols"],
                 rows=grid_cfg["rows"],
             )
+            t1 = time.perf_counter()
+            log.info(f"识别完成，耗时 {(t1-t0)*1000:.1f}ms")
 
+            # 保存 debug 信息（仅第一次循环）
+            if loop_count == 1:
+                import cv2
+                import os
+                os.makedirs("debug", exist_ok=True)
+                cv2.imwrite("debug/screenshot.png", screenshot)
+                np.savetxt("debug/grid.txt", grid, fmt="%d", delimiter=" ")
+                log.info("debug 信息已保存到 debug/ 目录")
+
+            # 打印矩阵
             nonzero = np.count_nonzero(grid)
-            log.info(f"识别到 {nonzero} 个数字")
+            log.info(f"识别到 {nonzero} 个数字，当前总分: {total_score}")
+            for r in range(grid_cfg["rows"]):
+                row_str = " ".join(str(grid[r][c]) if grid[r][c] > 0 else "." for c in range(grid_cfg["cols"]))
+                log.debug(f"  行{r:2d}: {row_str}")
 
             if nonzero == 0:
                 log.info("网格为空，等待新一轮...")
                 time.sleep(2.0)
                 continue
 
-            # 求解：蒙特卡洛规划完整序列
-            log.info("规划中...")
+            # 求解：返回完整操作序列
+            log.debug(f"求解中... depth={search_depth}, beam={beam_width}")
             t0 = time.perf_counter()
-            moves = solve(grid)
+            moves = solve(grid, depth=search_depth, beam_width=beam_width)
             t1 = time.perf_counter()
-
-            # 计算预计得分
-            temp_grid = grid.copy()
-            predicted_score = 0
-            for r1, c1, r2, c2 in moves:
-                predicted_score += int(np.count_nonzero(temp_grid[r1:r2+1, c1:c2+1]))
-                temp_grid[r1:r2+1, c1:c2+1] = 0
-
-            log.info(f"规划完成: {len(moves)} 步, 预计消除 {predicted_score}/{nonzero} 个格子, 耗时 {t1-t0:.1f}s")
+            log.info(f"求解完成，耗时 {(t1-t0)*1000:.1f}ms, 步数={len(moves)}")
 
             if not moves:
                 log.info("没有可消除的矩形，等待...")
                 time.sleep(2.0)
                 continue
 
-            print(f"预计消除 {predicted_score}/{nonzero} 格, {len(moves)} 步, 耗时 {t1-t0:.1f}s")
-
-            # 执行完整序列
+            # 执行完整序列（省去中间截图识别的时间）
             for i, (r1, c1, r2, c2) in enumerate(moves):
                 if paused or not running:
                     break
                 eliminated = int(np.count_nonzero(grid[r1:r2 + 1, c1:c2 + 1]))
                 total_score += eliminated
-                grid[r1:r2 + 1, c1:c2 + 1] = 0
-                log.info(f"[{i+1}/{len(moves)}] ({r1},{c1})->({r2},{c2}) "
-                         f"消{eliminated} 总分{total_score}")
+                grid[r1:r2 + 1, c1:c2 + 1] = 0  # 更新本地网格
+                log.info(f"步骤 {i+1}/{len(moves)}: ({r1},{c1})->({r2},{c2}), "
+                         f"消 {eliminated} 个, 总分 {total_score}")
                 executor.execute_move(r1, c1, r2, c2)
 
     except Exception as e:
