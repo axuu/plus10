@@ -216,15 +216,22 @@ def main():
                 elif choice.isdigit():
                     target_score = int(choice)
                     no_improve_count = 0
-                    print(f"自动规划中，目标 {target_score}...")
-                    while best_expected < target_score and no_improve_count < max_no_improve:
+                    total_budget = 30.0  # 总时间预算
+                    t_start = time.perf_counter()
+                    print(f"自动规划中，目标 {target_score}，总时限 {total_budget:.0f}s...")
+                    while (best_expected < target_score
+                           and no_improve_count < max_no_improve
+                           and time.perf_counter() - t_start < total_budget):
                         if not running:
                             break
                         _run_once()
+                    elapsed_total = time.perf_counter() - t_start
                     if best_expected >= target_score:
-                        print(f"达标! 最优 {best_expected} >= 目标 {target_score}")
+                        print(f"达标! 最优 {best_expected} >= 目标 {target_score} ({elapsed_total:.1f}s)")
                     else:
-                        print(f"连续 {max_no_improve} 次未提升，停止。最优: {best_expected}")
+                        reason = (f"超时 {elapsed_total:.1f}s" if elapsed_total >= total_budget
+                                  else f"连续 {max_no_improve} 次未提升")
+                        print(f"{reason}，停止。最优: 消{best_expected} 剩{best_remaining}")
                 else:
                     # Enter 或其他：执行
                     break

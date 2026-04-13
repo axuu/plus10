@@ -17,7 +17,7 @@ solver:
   search_depth: 5
   beam_width: 15
   n_simulations: 500
-  time_budget: 30
+  time_budget: 5
 
 executor:
   animation_delay: 0.1
