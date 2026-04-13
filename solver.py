@@ -104,7 +104,7 @@ def _simulate_game(grid: np.ndarray, rng: np.random.Generator) -> tuple[list, in
 
 
 def solve(
-    grid: np.ndarray, n_simulations: int = 30, time_budget: float = 3.0,
+    grid: np.ndarray, n_simulations: int = 200, time_budget: float = 8.0,
     **kwargs,
 ) -> list[tuple[int, int, int, int]]:
     """蒙特卡洛规划：模拟多局完整游戏，选最优序列。
