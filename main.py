@@ -36,75 +36,14 @@ def save_config(config: dict, path: str = "config.yaml"):
 
 def auto_calibrate_grid(screenshot: np.ndarray, config: dict) -> bool:
     """用截图自动标定网格位置，更新 config 并保存。返回是否成功。"""
-    import cv2
-    import os
-    from auto_calibrate import detect_circles_in_region, find_corner, cluster_1d
-
-    h, w = screenshot.shape[:2]
-    cols = config["grid"]["cols"]
-    rows = config["grid"]["rows"]
-
-    # 尝试用边角模板定位搜索范围
-    corner_path = None
-    for ext in (".jpg", ".jpeg", ".png", ".bmp"):
-        candidate = os.path.join("templates", f"0{ext}")
-        if os.path.exists(candidate):
-            corner_path = candidate
-            break
-
-    if corner_path:
-        corner_tpl = cv2.imread(corner_path)
-        if corner_tpl is not None:
-            th, tw = corner_tpl.shape[:2]
-            gray_shot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
-            gray_tpl = cv2.cvtColor(corner_tpl, cv2.COLOR_BGR2GRAY)
-
-            pos_tl, _ = find_corner(gray_shot, gray_tpl, "左上角")
-            pos_br, _ = find_corner(gray_shot, cv2.flip(cv2.flip(gray_tpl, 1), 0), "右下角")
-
-            search_x1 = pos_tl[0]
-            search_y1 = pos_tl[1]
-            search_x2 = pos_br[0] + tw
-            search_y2 = pos_br[1] + th
-        else:
-            search_x1, search_y1, search_x2, search_y2 = 0, 0, w, h
+    from auto_calibrate import auto_calibrate_grid as _calibrate
+    ok = _calibrate(screenshot, config, save_func=save_config)
+    if ok:
+        log.info(f"标定完成: origin=({config['grid']['origin_x']}, {config['grid']['origin_y']}), "
+                 f"cell=({config['grid']['cell_width']} x {config['grid']['cell_height']})")
     else:
-        search_x1, search_y1, search_x2, search_y2 = 0, 0, w, h
-
-    # 在范围内检测圆形格子
-    centers, _ = detect_circles_in_region(screenshot, search_x1, search_y1, search_x2, search_y2)
-    log.info(f"自动标定: 检测到 {len(centers)} 个格子")
-
-    if len(centers) < 20:
-        log.warning("检测到的格子太少，跳过标定")
-        return False
-
-    x_clusters = cluster_1d([c[0] for c in centers], cols)
-    y_clusters = cluster_1d([c[1] for c in centers], rows)
-
-    if x_clusters is None or y_clusters is None or len(x_clusters) < 2 or len(y_clusters) < 2:
-        log.warning("聚类失败，跳过标定")
-        return False
-
-    x_clusters.sort()
-    y_clusters.sort()
-
-    x_diffs = [x_clusters[i+1] - x_clusters[i] for i in range(len(x_clusters)-1)]
-    y_diffs = [y_clusters[i+1] - y_clusters[i] for i in range(len(y_clusters)-1)]
-    cell_w = float(np.median(x_diffs))
-    cell_h = float(np.median(y_diffs))
-
-    origin_x = x_clusters[0] - cell_w / 2
-    origin_y = y_clusters[0] - cell_h / 2
-
-    config["grid"]["origin_x"] = float(round(origin_x / w, 6))
-    config["grid"]["origin_y"] = float(round(origin_y / h, 6))
-    config["grid"]["cell_width"] = float(round(cell_w / w, 6))
-    config["grid"]["cell_height"] = float(round(cell_h / h, 6))
-
-    save_config(config)
-    log.info(f"标定完成: origin=({origin_x:.0f},{origin_y:.0f}), cell={cell_w:.1f}x{cell_h:.1f}")
-    return True
+        log.warning("自动标定失败")
+    return ok
 
 
 def main():
