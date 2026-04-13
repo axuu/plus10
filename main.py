@@ -72,15 +72,15 @@ def main():
 
         search_depth = config["solver"]["search_depth"]
         beam_width = config["solver"].get("beam_width", 15)
-        log.info(f"搜索参数: depth={search_depth}, beam_width={beam_width}")
+        time_budget = config["solver"].get("time_budget", 10.0)
+        n_simulations = config["solver"].get("n_simulations", 200)
+        log.info(f"搜索参数: depth={search_depth}, beam_width={beam_width}, "
+                 f"time_budget={time_budget}s, n_simulations={n_simulations}")
 
-        paused = False
         total_score = 0
 
-        # 注册快捷键
+        # 注册退出快捷键
         hotkeys = config["hotkeys"]
-        log.info(f"快捷键: 暂停={hotkeys['pause']}, 退出={hotkeys['quit']}")
-
         running = True
 
         def on_quit():
@@ -88,40 +88,35 @@ def main():
             running = False
             log.info("收到退出快捷键")
 
-        def on_pause():
-            nonlocal paused
-            paused = not paused
-            log.info(f"{'已暂停' if paused else '已恢复'}")
-
         keyboard.add_hotkey(hotkeys["quit"], on_quit)
-        keyboard.add_hotkey(hotkeys["pause"], on_pause)
-        log.info("快捷键注册完成，开始主循环")
+        log.info(f"快捷键: 退出={hotkeys['quit']}")
 
         loop_count = 0
         while running:
             loop_count += 1
+            log.info(f"\n===== 轮次 #{loop_count} =====")
 
-            if paused:
-                time.sleep(0.1)
-                continue
+            # --- 截图 ---
+            print(f"\n[轮次 #{loop_count}] 请确保游戏窗口可见，按 Enter 截图...")
+            input()
+            if not running:
+                break
 
-            # 检查窗口是否在前台
-            fg = win32gui.GetForegroundWindow()
-            if fg != hwnd:
-                log.debug(f"循环 #{loop_count}: 窗口不在前台 (fg={fg}, hwnd={hwnd})，等待...")
-                time.sleep(0.5)
-                continue
-
-            log.info(f"===== 循环 #{loop_count} =====")
-
-            # 截图
             log.debug("截图中...")
             t0 = time.perf_counter()
             screenshot = capture_window(hwnd)
             t1 = time.perf_counter()
-            log.info(f"截图完成: {screenshot.shape}, 耗时 {(t1-t0)*1000:.1f}ms")
+            log.info(f"截图完成: {screenshot.shape}, 耗时 {(t1 - t0) * 1000:.1f}ms")
 
-            # 识别矩阵
+            # 保存 debug 信息
+            if loop_count == 1:
+                import cv2
+                import os
+                os.makedirs("debug", exist_ok=True)
+                cv2.imwrite("debug/screenshot.png", screenshot)
+                log.info("debug 截图已保存")
+
+            # --- 识别 ---
             log.debug("识别矩阵中...")
             t0 = time.perf_counter()
             grid = recognizer.extract_grid(
@@ -134,51 +129,81 @@ def main():
                 rows=grid_cfg["rows"],
             )
             t1 = time.perf_counter()
-            log.info(f"识别完成，耗时 {(t1-t0)*1000:.1f}ms")
-
-            # 保存 debug 信息（仅第一次循环）
-            if loop_count == 1:
-                import cv2
-                import os
-                os.makedirs("debug", exist_ok=True)
-                cv2.imwrite("debug/screenshot.png", screenshot)
-                np.savetxt("debug/grid.txt", grid, fmt="%d", delimiter=" ")
-                log.info("debug 信息已保存到 debug/ 目录")
+            log.info(f"识别完成，耗时 {(t1 - t0) * 1000:.1f}ms")
 
             # 打印矩阵
             nonzero = np.count_nonzero(grid)
-            log.info(f"识别到 {nonzero} 个数字，当前总分: {total_score}")
+            print(f"\n识别到 {nonzero} 个数字:")
             for r in range(grid_cfg["rows"]):
-                row_str = " ".join(str(grid[r][c]) if grid[r][c] > 0 else "." for c in range(grid_cfg["cols"]))
-                log.debug(f"  行{r:2d}: {row_str}")
+                row_str = " ".join(
+                    f"{grid[r][c]:d}" if grid[r][c] > 0 else "."
+                    for c in range(grid_cfg["cols"])
+                )
+                print(f"  行{r:2d}: {row_str}")
 
             if nonzero == 0:
-                log.info("网格为空，等待新一轮...")
+                print("网格为空，等待新一轮...")
                 time.sleep(2.0)
                 continue
 
-            # 求解：返回完整操作序列
-            log.debug(f"求解中... depth={search_depth}, beam={beam_width}")
+            # 保存 debug grid
+            if loop_count == 1:
+                np.savetxt("debug/grid.txt", grid, fmt="%d", delimiter=" ")
+
+            # --- 规划（充分搜索）---
+            print(f"\n规划中 (depth={search_depth}, beam={beam_width}, "
+                  f"MC={n_simulations}, 时间上限={time_budget}s)...")
             t0 = time.perf_counter()
-            moves = solve(grid, depth=search_depth, beam_width=beam_width)
+            moves = solve(
+                grid,
+                depth=search_depth,
+                beam_width=beam_width,
+                n_simulations=n_simulations,
+                time_budget=time_budget,
+            )
             t1 = time.perf_counter()
-            log.info(f"求解完成，耗时 {(t1-t0)*1000:.1f}ms, 步数={len(moves)}")
 
             if not moves:
-                log.info("没有可消除的矩形，等待...")
-                time.sleep(2.0)
+                print("没有可消除的矩形。")
                 continue
 
-            # 执行完整序列（省去中间截图识别的时间）
+            # 预计消除数
+            g_preview = grid.copy()
+            expected_score = 0
+            for r1, c1, r2, c2 in moves:
+                expected_score += int(np.count_nonzero(g_preview[r1:r2 + 1, c1:c2 + 1]))
+                g_preview[r1:r2 + 1, c1:c2 + 1] = 0
+            remaining = int(np.count_nonzero(g_preview))
+
+            print(f"\n规划完成: {len(moves)} 步, 预计消除 {expected_score} 格, "
+                  f"剩余 {remaining} 格, 耗时 {(t1 - t0) * 1000:.0f}ms")
             for i, (r1, c1, r2, c2) in enumerate(moves):
-                if paused or not running:
+                print(f"  步骤 {i + 1}: ({r1},{c1})->({r2},{c2})")
+
+            # --- 等待确认 ---
+            print(f"\n按 Enter 开始执行（{hotkeys['quit']} 退出）...")
+            input()
+            if not running:
+                break
+
+            # --- 自动聚焦窗口 + 执行 ---
+            try:
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception as e:
+                log.warning(f"聚焦窗口失败: {e}")
+            time.sleep(0.3)  # 等窗口切换完成
+
+            for i, (r1, c1, r2, c2) in enumerate(moves):
+                if not running:
                     break
                 eliminated = int(np.count_nonzero(grid[r1:r2 + 1, c1:c2 + 1]))
                 total_score += eliminated
-                grid[r1:r2 + 1, c1:c2 + 1] = 0  # 更新本地网格
-                log.info(f"步骤 {i+1}/{len(moves)}: ({r1},{c1})->({r2},{c2}), "
+                grid[r1:r2 + 1, c1:c2 + 1] = 0
+                log.info(f"步骤 {i + 1}/{len(moves)}: ({r1},{c1})->({r2},{c2}), "
                          f"消 {eliminated} 个, 总分 {total_score}")
                 executor.execute_move(r1, c1, r2, c2)
+
+            print(f"\n本轮完成，总分: {total_score}")
 
     except Exception as e:
         log.error(f"程序异常: {e}")
