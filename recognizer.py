@@ -73,7 +73,7 @@ class GridRecognizer:
         cy2 = cell_h - cy1
 
         cell_center = cell_img[cy1:cy2, cx1:cx2]
-        cell_gray = cv2.cvtColor(cell_center, cv2.COLOR_BGR2GRAY)
+        cell_bin = _extract_dark_pixels(cell_center, self.dark_threshold)
 
         best_digit = 0
         best_score = -1.0
@@ -84,9 +84,9 @@ class GridRecognizer:
             for tpl_raw in tpl_list:
                 tpl_resized = cv2.resize(tpl_raw, (cell_w, cell_h))
                 tpl_center = tpl_resized[cy1:cy2, cx1:cx2]
-                tpl_gray = cv2.cvtColor(tpl_center, cv2.COLOR_BGR2GRAY)
+                tpl_bin = _extract_dark_pixels(tpl_center, self.dark_threshold)
 
-                result = cv2.matchTemplate(cell_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
+                result = cv2.matchTemplate(cell_bin, tpl_bin, cv2.TM_CCOEFF_NORMED)
                 score = result[0][0]
                 if score > digit_best:
                     digit_best = score
