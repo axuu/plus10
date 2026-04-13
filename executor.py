@@ -37,19 +37,20 @@ class Executor:
                  f"cell=({cell_width}x{cell_height}), shrink={inward_shrink}, delay={animation_delay}")
 
     def _cell_to_pixel(self, row: int, col: int) -> tuple[int, int]:
-        left, top, right, bottom = win32gui.GetWindowRect(self.hwnd)
-        win_w = right - left
-        win_h = bottom - top
+        # 用 GetClientRect + ClientToScreen，与 capture_window 一致
+        cr = win32gui.GetClientRect(self.hwnd)
+        left, top = win32gui.ClientToScreen(self.hwnd, (cr[0], cr[1]))
+        cw_total = cr[2] - cr[0]
+        ch_total = cr[3] - cr[1]
 
-        # 比例值转像素
-        ox = self.grid_origin_x * win_w if self.grid_origin_x <= 1.0 else self.grid_origin_x
-        oy = self.grid_origin_y * win_h if self.grid_origin_y <= 1.0 else self.grid_origin_y
-        cw = self.cell_width * win_w if self.cell_width <= 1.0 else self.cell_width
-        ch = self.cell_height * win_h if self.cell_height <= 1.0 else self.cell_height
+        ox = self.grid_origin_x * cw_total if self.grid_origin_x <= 1.0 else self.grid_origin_x
+        oy = self.grid_origin_y * ch_total if self.grid_origin_y <= 1.0 else self.grid_origin_y
+        cw = self.cell_width * cw_total if self.cell_width <= 1.0 else self.cell_width
+        ch = self.cell_height * ch_total if self.cell_height <= 1.0 else self.cell_height
 
         px = int(round(left + ox + (col + 0.5) * cw))
         py = int(round(top + oy + (row + 0.5) * ch))
-        log.debug(f"  cell({row},{col}) -> pixel({px},{py}) [win=({left},{top},{win_w}x{win_h})]")
+        log.debug(f"  cell({row},{col}) -> pixel({px},{py}) [client=({left},{top},{cw_total}x{ch_total})]")
         return px, py
 
     def _ensure_foreground(self) -> bool:

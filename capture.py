@@ -44,11 +44,12 @@ def find_game_window(title: str) -> int:
 
 
 def capture_window(hwnd: int) -> np.ndarray:
-    """截取整个窗口区域（与 executor 坐标系一致）"""
-    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-    width = right - left
-    height = bottom - top
-    log.debug(f"窗口截图: left={left}, top={top}, w={width}, h={height}")
+    """截取窗口客户区（不含标题栏/边框，与 executor 坐标系一致）"""
+    cr_left, cr_top, cr_right, cr_bottom = win32gui.GetClientRect(hwnd)
+    left, top = win32gui.ClientToScreen(hwnd, (cr_left, cr_top))
+    width = cr_right - cr_left
+    height = cr_bottom - cr_top
+    log.debug(f"客户区截图: left={left}, top={top}, w={width}, h={height}")
 
     if width <= 0 or height <= 0:
         raise RuntimeError(f"截图区域无效: {width}x{height}")
