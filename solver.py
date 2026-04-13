@@ -9,10 +9,6 @@ log = logging.getLogger("solver")
 def find_valid_rectangles(grid: np.ndarray, top_n: int = 0) -> list[tuple[int, int, int, int, int]]:
     """找出所有和为10且至少包含2个非空数字的矩形。
 
-    Args:
-        grid: 棋盘
-        top_n: 只返回消除数最多的前 N 个（0=全部）
-
     Returns:
         list of (r1, c1, r2, c2, count) 按 count 降序
     """
@@ -71,90 +67,121 @@ def find_valid_rectangles(grid: np.ndarray, top_n: int = 0) -> list[tuple[int, i
     ]
 
 
+def _greedy_complete(grid: np.ndarray) -> tuple[list, int]:
+    """纯贪心：每步选消除数最多的矩形，直到无法继续。"""
+    g = grid.copy()
+    moves = []
+    total = 0
+    while True:
+        rects = find_valid_rectangles(g, top_n=1)
+        if not rects:
+            break
+        r1, c1, r2, c2, cnt = rects[0]
+        eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
+        moves.append((r1, c1, r2, c2))
+        total += eliminated
+        g[r1:r2 + 1, c1:c2 + 1] = 0
+    return moves, total
+
+
 def _simulate_game(grid: np.ndarray, rng: np.random.Generator) -> tuple[list, int]:
-    """模拟一局完整游戏（随机加权贪心）。
-
-    从 top 5 中按消除数的平方为权重随机选择，兼顾贪心和探索。
-
-    Returns:
-        (操作序列, 总消除数)
-    """
+    """随机加权贪心模拟。"""
     g = grid.copy()
     moves = []
     total = 0
 
     while True:
-        rects = find_valid_rectangles(g, top_n=8)
+        rects = find_valid_rectangles(g, top_n=10)
         if not rects:
             break
 
-        # 加权随机选择：消除数的平方作为权重
         weights = np.array([cnt ** 2 for _, _, _, _, cnt in rects], dtype=float)
         weights /= weights.sum()
 
         idx = rng.choice(len(rects), p=weights)
         r1, c1, r2, c2, cnt = rects[idx]
 
-        eliminated = int(np.count_nonzero(g[r1:r2+1, c1:c2+1]))
+        eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
         total += eliminated
-        g[r1:r2+1, c1:c2+1] = 0
+        g[r1:r2 + 1, c1:c2 + 1] = 0
 
     return moves, total
 
 
 def solve(
-    grid: np.ndarray, n_simulations: int = 30, time_budget: float = 3.0,
+    grid: np.ndarray,
+    depth: int = 5,
+    beam_width: int = 15,
+    n_simulations: int = 50,
+    time_budget: float = 3.0,
     **kwargs,
 ) -> list[tuple[int, int, int, int]]:
-    """蒙特卡洛规划：模拟多局完整游戏，选最优序列。
+    """Beam search + 贪心补全 + Monte Carlo 探索。
 
-    Args:
-        grid: 16x10 数组
-        n_simulations: 最大模拟次数
-        time_budget: 最大规划时间（秒）
-
-    Returns:
-        [(r1, c1, r2, c2), ...] 完整操作序列
+    Phase 1: Beam search 前 depth 步，保留 beam_width 个最优分支
+    Phase 2: 每个分支用贪心补全到底
+    Phase 3: Monte Carlo 随机模拟，在剩余时间内探索更多可能
     """
     if int(np.count_nonzero(grid)) == 0:
         return []
 
+    t0 = time.perf_counter()
     rng = np.random.default_rng()
+
+    # === Phase 1: Beam search ===
+    # 每个 beam: (grid, moves, score)
+    beams = [(grid.copy(), [], 0)]
+    expand_n = max(beam_width, 20)  # 每个状态尝试的候选数
+
+    for d in range(depth):
+        candidates = []
+        for g, moves, score in beams:
+            rects = find_valid_rectangles(g, top_n=expand_n)
+            if not rects:
+                # 无路可走，保留当前状态
+                candidates.append((g, moves, score))
+                continue
+            for r1, c1, r2, c2, cnt in rects:
+                new_g = g.copy()
+                eliminated = int(np.count_nonzero(new_g[r1:r2 + 1, c1:c2 + 1]))
+                new_g[r1:r2 + 1, c1:c2 + 1] = 0
+                candidates.append((new_g, moves + [(r1, c1, r2, c2)], score + eliminated))
+
+        # 按分数降序，保留 beam_width 个
+        candidates.sort(key=lambda x: -x[2])
+        beams = candidates[:beam_width]
+
+    # === Phase 2: 贪心补全每个 beam ===
     best_moves = []
     best_score = 0
-    t0 = time.perf_counter()
 
-    # 先跑一次纯贪心（不随机）作为基线
-    g = grid.copy()
-    greedy_moves = []
-    greedy_score = 0
-    while True:
-        rects = find_valid_rectangles(g, top_n=1)
-        if not rects:
-            break
-        r1, c1, r2, c2, cnt = rects[0]
-        eliminated = int(np.count_nonzero(g[r1:r2+1, c1:c2+1]))
-        greedy_moves.append((r1, c1, r2, c2))
-        greedy_score += eliminated
-        g[r1:r2+1, c1:c2+1] = 0
-
-    best_moves = greedy_moves
-    best_score = greedy_score
-    log.info(f"贪心基线: {greedy_score} 分, {len(greedy_moves)} 步")
-
-    # 蒙特卡洛模拟
-    for i in range(n_simulations):
-        if time.perf_counter() - t0 > time_budget:
-            log.info(f"时间预算用完，完成 {i} 次模拟")
-            break
-
-        moves, score = _simulate_game(grid, rng)
-        if score > best_score:
-            best_score = score
-            best_moves = moves
-            log.info(f"模拟 {i+1}: 新最优 {score} 分, {len(moves)} 步")
+    for g, moves, score in beams:
+        extra_moves, extra_score = _greedy_complete(g)
+        total_score = score + extra_score
+        total_moves = moves + extra_moves
+        if total_score > best_score:
+            best_score = total_score
+            best_moves = total_moves
 
     elapsed = time.perf_counter() - t0
-    log.info(f"规划完成: {best_score} 分, {len(best_moves)} 步, 耗时 {elapsed:.1f}s")
+    log.info(f"Beam search: {best_score} 分, {len(best_moves)} 步, 耗时 {elapsed:.1f}s")
+
+    # === Phase 3: Monte Carlo 探索 ===
+    mc_improved = 0
+    for i in range(n_simulations):
+        if time.perf_counter() - t0 > time_budget:
+            log.info(f"时间预算用完，完成 {i} 次 MC 模拟")
+            break
+
+        mc_moves, mc_score = _simulate_game(grid, rng)
+        if mc_score > best_score:
+            best_score = mc_score
+            best_moves = mc_moves
+            mc_improved += 1
+            log.info(f"MC 模拟 {i + 1}: 新最优 {mc_score} 分, {len(mc_moves)} 步")
+
+    elapsed = time.perf_counter() - t0
+    log.info(f"规划完成: {best_score} 分, {len(best_moves)} 步, "
+             f"MC 改进 {mc_improved} 次, 总耗时 {elapsed:.1f}s")
     return best_moves

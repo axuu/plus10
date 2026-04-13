@@ -18,7 +18,7 @@ solver:
   beam_width: 15
 
 executor:
-  animation_delay: 0.3
+  animation_delay: 0.1
   inward_shrink: 5
 
 hotkeys:

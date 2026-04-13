@@ -100,11 +100,10 @@ class Executor:
         log.info(f"  拖拽: ({start_x},{start_y}) -> ({end_x},{end_y}) [shrink={shrink}]")
 
         pyautogui.moveTo(start_x, start_y, duration=0)
-        time.sleep(0.1)
+        time.sleep(0.02)
         pyautogui.mouseDown()
-        time.sleep(0.1)
-        pyautogui.moveTo(end_x, end_y, duration=0.3)
-        time.sleep(0.1)
+        time.sleep(0.02)
+        pyautogui.moveTo(end_x, end_y, duration=0.12)
         pyautogui.mouseUp()
 
         log.info(f"  拖拽完成，等待动画 {self.animation_delay}s")
