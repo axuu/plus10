@@ -37,37 +37,19 @@ class Executor:
                  f"cell=({cell_width}x{cell_height}), shrink={inward_shrink}, delay={animation_delay}")
 
     def _cell_to_pixel(self, row: int, col: int) -> tuple[int, int]:
-        # 获取客户区屏幕坐标，并裁剪到工作区（与 capture_window 一致）
-        cr = win32gui.GetClientRect(self.hwnd)
-        client_left, client_top = win32gui.ClientToScreen(self.hwnd, (cr[0], cr[1]))
-        client_w = cr[2] - cr[0]
-        client_h = cr[3] - cr[1]
+        left, top, right, bottom = win32gui.GetWindowRect(self.hwnd)
+        win_w = right - left
+        win_h = bottom - top
 
-        # 裁剪到工作区（排除任务栏）
-        try:
-            import win32api
-            monitor = win32api.MonitorFromWindow(self.hwnd, 0)
-            info = win32api.GetMonitorInfo(monitor)
-            work = info["Work"]
-            clipped_left = max(client_left, work[0])
-            clipped_top = max(client_top, work[1])
-            clipped_w = min(client_left + client_w, work[2]) - clipped_left
-            clipped_h = min(client_top + client_h, work[3]) - clipped_top
-        except Exception:
-            clipped_left = client_left
-            clipped_top = client_top
-            clipped_w = client_w
-            clipped_h = client_h
+        # 比例值转像素
+        ox = self.grid_origin_x * win_w if self.grid_origin_x <= 1.0 else self.grid_origin_x
+        oy = self.grid_origin_y * win_h if self.grid_origin_y <= 1.0 else self.grid_origin_y
+        cw = self.cell_width * win_w if self.cell_width <= 1.0 else self.cell_width
+        ch = self.cell_height * win_h if self.cell_height <= 1.0 else self.cell_height
 
-        # 比例值转像素（基于裁剪后的尺寸，与截图一致）
-        ox = self.grid_origin_x * clipped_w if self.grid_origin_x <= 1.0 else self.grid_origin_x
-        oy = self.grid_origin_y * clipped_h if self.grid_origin_y <= 1.0 else self.grid_origin_y
-        cw = self.cell_width * clipped_w if self.cell_width <= 1.0 else self.cell_width
-        ch = self.cell_height * clipped_h if self.cell_height <= 1.0 else self.cell_height
-
-        px = int(round(clipped_left + ox + (col + 0.5) * cw))
-        py = int(round(clipped_top + oy + (row + 0.5) * ch))
-        log.debug(f"  cell({row},{col}) -> pixel({px},{py}) [clipped=({clipped_left},{clipped_top},{clipped_w}x{clipped_h})]")
+        px = int(round(left + ox + (col + 0.5) * cw))
+        py = int(round(top + oy + (row + 0.5) * ch))
+        log.debug(f"  cell({row},{col}) -> pixel({px},{py}) [win=({left},{top},{win_w}x{win_h})]")
         return px, py
 
     def _ensure_foreground(self) -> bool:

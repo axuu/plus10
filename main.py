@@ -175,10 +175,15 @@ def main():
                 time.sleep(0.1)
                 continue
 
+            # 如果窗口不在前台，自动激活
             fg = win32gui.GetForegroundWindow()
             if fg != hwnd:
-                time.sleep(0.5)
-                continue
+                try:
+                    win32gui.SetForegroundWindow(hwnd)
+                    time.sleep(0.3)
+                except Exception:
+                    time.sleep(0.5)
+                    continue
 
             log.info(f"===== 循环 #{loop_count} =====")
 
@@ -222,19 +227,7 @@ def main():
                 time.sleep(2.0)
                 continue
 
-            # 等待用户确认
-            print(f"\n{'='*40}")
-            print(f"  预计消除: {predicted_score}/{nonzero} 个格子")
-            print(f"  操作步数: {len(moves)} 步")
-            print(f"  规划耗时: {t1-t0:.1f}s")
-            print(f"{'='*40}")
-            confirm = input("按回车执行，输入 r 重新规划，输入 q 退出: ").strip().lower()
-
-            if confirm == "q":
-                running = False
-                break
-            elif confirm == "r":
-                continue
+            print(f"预计消除 {predicted_score}/{nonzero} 格, {len(moves)} 步, 耗时 {t1-t0:.1f}s")
 
             # 执行完整序列
             for i, (r1, c1, r2, c2) in enumerate(moves):
