@@ -5,6 +5,8 @@ import numpy as np
 
 log = logging.getLogger("recognizer")
 
+NORM_SIZE = 40  # 归一化数字尺寸
+
 
 def _extract_dark_pixels(img: np.ndarray, threshold: int = 80) -> np.ndarray:
     if len(img.shape) == 3:
@@ -13,6 +15,28 @@ def _extract_dark_pixels(img: np.ndarray, threshold: int = 80) -> np.ndarray:
         gray = img
     _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
     return binary
+
+
+def _normalize_digit(binary_img: np.ndarray) -> np.ndarray | None:
+    """从二值图中提取数字区域，归一化到 NORM_SIZE x NORM_SIZE。"""
+    coords = cv2.findNonZero(binary_img)
+    if coords is None:
+        return None
+    x, y, w, h = cv2.boundingRect(coords)
+    if w < 2 or h < 2:
+        return None
+    digit = binary_img[y:y + h, x:x + w]
+    # 保持宽高比缩放，留 2px 边距
+    scale = min((NORM_SIZE - 4) / h, (NORM_SIZE - 4) / w)
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
+    resized = cv2.resize(digit, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    # 居中放到画布上
+    canvas = np.zeros((NORM_SIZE, NORM_SIZE), dtype=np.uint8)
+    y_off = (NORM_SIZE - new_h) // 2
+    x_off = (NORM_SIZE - new_w) // 2
+    canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+    return canvas
 
 
 class GridRecognizer:
@@ -26,12 +50,12 @@ class GridRecognizer:
         self.confidence_threshold = confidence_threshold
         self.empty_variance_threshold = empty_variance_threshold
         self.dark_threshold = dark_threshold
-        # 存储原始彩色模板，不预先二值化
-        self.templates_raw: dict[int, np.ndarray] = {}
+        self.templates_raw: dict[int, list[np.ndarray]] = {}
+        # 预计算归一化后的模板数字
+        self.template_norms: dict[int, list[np.ndarray]] = {}
 
         log.info(f"加载模板目录: {template_dir}, dark_threshold={dark_threshold}")
         for d in range(1, 10):
-            # 支持多模板: d.png, d_2.png, d_3.png ...
             variants = [str(d)] + [f"{d}_{i}" for i in range(2, 10)]
             loaded = []
             for name in variants:
@@ -55,6 +79,24 @@ class GridRecognizer:
         # 兼容旧代码引用
         self.templates = self.templates_raw
 
+        # 预计算：对每个模板做中心裁剪 → 二值化 → 归一化
+        for d, tpl_list in self.templates_raw.items():
+            norms = []
+            for tpl in tpl_list:
+                th, tw = tpl.shape[:2]
+                crop = 0.15
+                cx1 = int(tw * crop)
+                cy1 = int(th * crop)
+                tpl_center = tpl[cy1:th - cy1, cx1:tw - cx1]
+                tpl_bin = _extract_dark_pixels(tpl_center, dark_threshold)
+                norm = _normalize_digit(tpl_bin)
+                if norm is not None:
+                    norms.append(norm)
+                    log.debug(f"  模板 {d}: 归一化成功")
+                else:
+                    log.warning(f"  模板 {d}: 归一化失败（无深色像素）")
+            self.template_norms[d] = norms
+
     def recognize_cell(self, cell_img: np.ndarray, row: int = -1, col: int = -1) -> int:
         cell_h, cell_w = cell_img.shape[:2]
 
@@ -65,28 +107,27 @@ class GridRecognizer:
             log.debug(f"  cell({row},{col}): 空格 (dark_ratio={dark_ratio:.4f})")
             return 0
 
-        # 中心裁剪：只保留内部 60% 区域（去掉圆形边框，聚焦数字）
-        crop = 0.2  # 每边裁掉 20%
+        # 中心裁剪：去掉圆形边框
+        crop = 0.15
         cx1 = int(cell_w * crop)
         cy1 = int(cell_h * crop)
-        cx2 = cell_w - cx1
-        cy2 = cell_h - cy1
+        cell_center = cell_img[cy1:cell_h - cy1, cx1:cell_w - cx1]
 
-        cell_center = cell_img[cy1:cy2, cx1:cx2]
+        # 二值化 → 提取数字 → 归一化
         cell_bin = _extract_dark_pixels(cell_center, self.dark_threshold)
+        cell_norm = _normalize_digit(cell_bin)
+        if cell_norm is None:
+            log.debug(f"  cell({row},{col}): 归一化失败")
+            return 0
 
         best_digit = 0
         best_score = -1.0
         scores = {}
 
-        for digit, tpl_list in self.templates_raw.items():
+        for digit, norms in self.template_norms.items():
             digit_best = -1.0
-            for tpl_raw in tpl_list:
-                tpl_resized = cv2.resize(tpl_raw, (cell_w, cell_h))
-                tpl_center = tpl_resized[cy1:cy2, cx1:cx2]
-                tpl_bin = _extract_dark_pixels(tpl_center, self.dark_threshold)
-
-                result = cv2.matchTemplate(cell_bin, tpl_bin, cv2.TM_CCOEFF_NORMED)
+            for tpl_norm in norms:
+                result = cv2.matchTemplate(cell_norm, tpl_norm, cv2.TM_CCOEFF_NORMED)
                 score = result[0][0]
                 if score > digit_best:
                     digit_best = score
@@ -115,7 +156,6 @@ class GridRecognizer:
     ) -> np.ndarray:
         h, w = screenshot.shape[:2]
 
-        # 如果值 <= 1.0，视为比例，乘以截图尺寸（保持浮点精度）
         ox = origin_x * w if origin_x <= 1.0 else float(origin_x)
         oy = origin_y * h if origin_y <= 1.0 else float(origin_y)
         cw = cell_width * w if cell_width <= 1.0 else float(cell_width)
@@ -126,7 +166,6 @@ class GridRecognizer:
 
         for r in range(rows):
             for c in range(cols):
-                # 每个格子独立从浮点计算像素位置，避免误差累积
                 x = int(round(ox + c * cw))
                 y = int(round(oy + r * ch))
                 x2 = int(round(ox + (c + 1) * cw))
