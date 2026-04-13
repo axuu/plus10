@@ -29,15 +29,10 @@ def load_config():
 
 def test_screenshot(screenshot_path: str):
     """从截图中识别网格，打印结果并保存可视化图片。"""
-    config = load_config()
-    grid_cfg = config["grid"]
-    recog_cfg = config["recognition"]
+    from main import auto_calibrate_grid
 
-    recognizer = GridRecognizer(
-        template_dir="templates",
-        confidence_threshold=recog_cfg["confidence_threshold"],
-        dark_threshold=recog_cfg["dark_threshold"],
-    )
+    config = load_config()
+    recog_cfg = config["recognition"]
 
     screenshot = cv2.imread(screenshot_path)
     if screenshot is None:
@@ -45,6 +40,21 @@ def test_screenshot(screenshot_path: str):
         return
 
     print(f"截图尺寸: {screenshot.shape[1]}x{screenshot.shape[0]}")
+
+    # 自动校准网格参数
+    if auto_calibrate_grid(screenshot, config):
+        config = load_config()
+        print("已自动校准网格参数")
+    else:
+        print("自动校准失败，使用现有配置")
+
+    grid_cfg = config["grid"]
+
+    recognizer = GridRecognizer(
+        template_dir="templates",
+        confidence_threshold=recog_cfg["confidence_threshold"],
+        dark_threshold=recog_cfg["dark_threshold"],
+    )
 
     grid = recognizer.extract_grid(
         screenshot,
