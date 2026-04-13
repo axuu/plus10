@@ -16,8 +16,8 @@ recognition:
 solver:
   search_depth: 5
   beam_width: 15
-  n_simulations: 200
-  time_budget: 10
+  n_simulations: 500
+  time_budget: 30
 
 executor:
   animation_delay: 0.1

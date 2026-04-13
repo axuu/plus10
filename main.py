@@ -150,16 +150,18 @@ def main():
             if loop_count == 1:
                 np.savetxt("debug/grid.txt", grid, fmt="%d", delimiter=" ")
 
-            # --- 规划（支持重跑）---
+            # --- 规划（支持目标分数自动重跑）---
             best_moves = []
             best_expected = 0
             best_remaining = nonzero
             run_count = 0
+            target_score = 0
+            no_improve_count = 0
+            max_no_improve = 5  # 连续无提升次数上限
 
-            while True:
+            def _run_once():
+                nonlocal run_count, best_moves, best_expected, best_remaining, no_improve_count
                 run_count += 1
-                print(f"\n规划第 {run_count} 次 (depth={search_depth}, beam={beam_width}, "
-                      f"MC={n_simulations}, 上限={time_budget}s)...")
                 t0 = time.perf_counter()
                 moves = solve(
                     grid,
@@ -171,35 +173,60 @@ def main():
                 t1 = time.perf_counter()
 
                 if not moves:
-                    print("没有可消除的矩形。")
-                    break
+                    return None, 0, nonzero
 
-                # 预计消除数
                 g_preview = grid.copy()
-                expected_score = 0
+                expected = 0
                 for r1, c1, r2, c2 in moves:
-                    expected_score += int(np.count_nonzero(g_preview[r1:r2 + 1, c1:c2 + 1]))
+                    expected += int(np.count_nonzero(g_preview[r1:r2 + 1, c1:c2 + 1]))
                     g_preview[r1:r2 + 1, c1:c2 + 1] = 0
-                remaining = int(np.count_nonzero(g_preview))
+                rem = int(np.count_nonzero(g_preview))
 
-                improved = expected_score > best_expected
+                improved = expected > best_expected
                 if improved:
                     best_moves = moves
-                    best_expected = expected_score
-                    best_remaining = remaining
+                    best_expected = expected
+                    best_remaining = rem
+                    no_improve_count = 0
+                else:
+                    no_improve_count += 1
 
-                tag = "★ 新最优" if improved else "  未超越"
-                print(f"{tag} | 本次: 消{expected_score} 剩{remaining} | "
-                      f"最优: 消{best_expected} 剩{best_remaining} | "
-                      f"{len(moves)}步 {(t1 - t0) * 1000:.0f}ms")
+                tag = "★" if improved else " "
+                elapsed = (t1 - t0) * 1000
+                print(f"  {tag} 第{run_count:2d}次: 消{expected:3d} 剩{rem:3d} | "
+                      f"最优: 消{best_expected} 剩{best_remaining} | {elapsed:.0f}ms")
+                return moves, expected, rem
 
-                print(f"\nEnter=执行最优方案  r=重新规划  {hotkeys['quit']}=退出")
+            # 第一次规划
+            print(f"\n规划中...")
+            _run_once()
+
+            if not best_moves:
+                print("没有可消除的矩形。")
+                continue
+
+            while True:
+                print(f"\nEnter=执行  r=重跑一次  数字=设目标自动跑(如120)  {hotkeys['quit']}=退出")
                 choice = input("> ").strip().lower()
                 if not running:
                     break
+
                 if choice == "r":
-                    continue
+                    _run_once()
+                elif choice.isdigit():
+                    target_score = int(choice)
+                    no_improve_count = 0
+                    print(f"自动规划中，目标 {target_score}...")
+                    while best_expected < target_score and no_improve_count < max_no_improve:
+                        if not running:
+                            break
+                        _run_once()
+                    if best_expected >= target_score:
+                        print(f"达标! 最优 {best_expected} >= 目标 {target_score}")
+                    else:
+                        print(f"连续 {max_no_improve} 次未提升，停止。最优: {best_expected}")
                 else:
+                    # Enter 或其他：执行
                     break
 
             moves = best_moves
