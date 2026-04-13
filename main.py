@@ -207,11 +207,33 @@ def main():
             t0 = time.perf_counter()
             moves = solve(grid)
             t1 = time.perf_counter()
-            log.info(f"规划完成: {len(moves)} 步, 耗时 {t1-t0:.1f}s")
+
+            # 计算预计得分
+            temp_grid = grid.copy()
+            predicted_score = 0
+            for r1, c1, r2, c2 in moves:
+                predicted_score += int(np.count_nonzero(temp_grid[r1:r2+1, c1:c2+1]))
+                temp_grid[r1:r2+1, c1:c2+1] = 0
+
+            log.info(f"规划完成: {len(moves)} 步, 预计消除 {predicted_score}/{nonzero} 个格子, 耗时 {t1-t0:.1f}s")
 
             if not moves:
                 log.info("没有可消除的矩形，等待...")
                 time.sleep(2.0)
+                continue
+
+            # 等待用户确认
+            print(f"\n{'='*40}")
+            print(f"  预计消除: {predicted_score}/{nonzero} 个格子")
+            print(f"  操作步数: {len(moves)} 步")
+            print(f"  规划耗时: {t1-t0:.1f}s")
+            print(f"{'='*40}")
+            confirm = input("按回车执行，输入 r 重新规划，输入 q 退出: ").strip().lower()
+
+            if confirm == "q":
+                running = False
+                break
+            elif confirm == "r":
                 continue
 
             # 执行完整序列
