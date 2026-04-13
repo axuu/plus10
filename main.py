@@ -150,41 +150,61 @@ def main():
             if loop_count == 1:
                 np.savetxt("debug/grid.txt", grid, fmt="%d", delimiter=" ")
 
-            # --- 规划（充分搜索）---
-            print(f"\n规划中 (depth={search_depth}, beam={beam_width}, "
-                  f"MC={n_simulations}, 时间上限={time_budget}s)...")
-            t0 = time.perf_counter()
-            moves = solve(
-                grid,
-                depth=search_depth,
-                beam_width=beam_width,
-                n_simulations=n_simulations,
-                time_budget=time_budget,
-            )
-            t1 = time.perf_counter()
+            # --- 规划（支持重跑）---
+            best_moves = []
+            best_expected = 0
+            best_remaining = nonzero
+            run_count = 0
 
-            if not moves:
-                print("没有可消除的矩形。")
+            while True:
+                run_count += 1
+                print(f"\n规划第 {run_count} 次 (depth={search_depth}, beam={beam_width}, "
+                      f"MC={n_simulations}, 上限={time_budget}s)...")
+                t0 = time.perf_counter()
+                moves = solve(
+                    grid,
+                    depth=search_depth,
+                    beam_width=beam_width,
+                    n_simulations=n_simulations,
+                    time_budget=time_budget,
+                )
+                t1 = time.perf_counter()
+
+                if not moves:
+                    print("没有可消除的矩形。")
+                    break
+
+                # 预计消除数
+                g_preview = grid.copy()
+                expected_score = 0
+                for r1, c1, r2, c2 in moves:
+                    expected_score += int(np.count_nonzero(g_preview[r1:r2 + 1, c1:c2 + 1]))
+                    g_preview[r1:r2 + 1, c1:c2 + 1] = 0
+                remaining = int(np.count_nonzero(g_preview))
+
+                improved = expected_score > best_expected
+                if improved:
+                    best_moves = moves
+                    best_expected = expected_score
+                    best_remaining = remaining
+
+                tag = "★ 新最优" if improved else "  未超越"
+                print(f"{tag} | 本次: 消{expected_score} 剩{remaining} | "
+                      f"最优: 消{best_expected} 剩{best_remaining} | "
+                      f"{len(moves)}步 {(t1 - t0) * 1000:.0f}ms")
+
+                print(f"\nEnter=执行最优方案  r=重新规划  {hotkeys['quit']}=退出")
+                choice = input("> ").strip().lower()
+                if not running:
+                    break
+                if choice == "r":
+                    continue
+                else:
+                    break
+
+            moves = best_moves
+            if not moves or not running:
                 continue
-
-            # 预计消除数
-            g_preview = grid.copy()
-            expected_score = 0
-            for r1, c1, r2, c2 in moves:
-                expected_score += int(np.count_nonzero(g_preview[r1:r2 + 1, c1:c2 + 1]))
-                g_preview[r1:r2 + 1, c1:c2 + 1] = 0
-            remaining = int(np.count_nonzero(g_preview))
-
-            print(f"\n规划完成: {len(moves)} 步, 预计消除 {expected_score} 格, "
-                  f"剩余 {remaining} 格, 耗时 {(t1 - t0) * 1000:.0f}ms")
-            for i, (r1, c1, r2, c2) in enumerate(moves):
-                print(f"  步骤 {i + 1}: ({r1},{c1})->({r2},{c2})")
-
-            # --- 等待确认 ---
-            print(f"\n按 Enter 开始执行（{hotkeys['quit']} 退出）...")
-            input()
-            if not running:
-                break
 
             # --- 自动聚焦窗口 + 执行 ---
             try:
@@ -199,8 +219,7 @@ def main():
                 eliminated = int(np.count_nonzero(grid[r1:r2 + 1, c1:c2 + 1]))
                 total_score += eliminated
                 grid[r1:r2 + 1, c1:c2 + 1] = 0
-                log.info(f"步骤 {i + 1}/{len(moves)}: ({r1},{c1})->({r2},{c2}), "
-                         f"消 {eliminated} 个, 总分 {total_score}")
+                log.debug(f"步骤 {i + 1}/{len(moves)}: ({r1},{c1})->({r2},{c2}), 消 {eliminated}")
                 executor.execute_move(r1, c1, r2, c2)
 
             print(f"\n本轮完成，总分: {total_score}")
