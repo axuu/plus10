@@ -67,16 +67,82 @@ def find_valid_rectangles(grid: np.ndarray, top_n: int = 0) -> list[tuple[int, i
     ]
 
 
-def _greedy_complete(grid: np.ndarray) -> tuple[list, int]:
-    """纯贪心：每步选消除数最多的矩形，直到无法继续。"""
+def _build_prefix(grid: np.ndarray):
+    """构建前缀和，用于 O(1) 矩形 sum/cnt 查询。"""
+    rows, cols = grid.shape
+    sp = np.zeros((rows + 1, cols + 1), dtype=np.int32)
+    cp = np.zeros((rows + 1, cols + 1), dtype=np.int32)
+    sp[1:, 1:] = np.cumsum(np.cumsum(grid, axis=0), axis=1)
+    cp[1:, 1:] = np.cumsum(np.cumsum(grid > 0, axis=0), axis=1)
+    return sp, cp
+
+
+def _eval_candidates(candidates, all_rects_arr, sp, cp, weight: float):
+    """向量化评估：清除候选矩形后还剩多少有效矩形。
+
+    Returns: 每个候选的 eval 分数 (np.ndarray)
+    """
+    a_r1 = all_rects_arr[:, 0]
+    a_c1 = all_rects_arr[:, 1]
+    a_r2 = all_rects_arr[:, 2]
+    a_c2 = all_rects_arr[:, 3]
+    a_cnt = all_rects_arr[:, 4]
+    a_sum = (sp[a_r2 + 1, a_c2 + 1] - sp[a_r1, a_c2 + 1]
+             - sp[a_r2 + 1, a_c1] + sp[a_r1, a_c1])
+
+    nc = len(candidates)
+    evals = np.empty(nc, dtype=float)
+
+    for ci in range(nc):
+        r1a, c1a, r2a, c2a, cnta = candidates[ci]
+
+        # 向量化交集
+        ri1 = np.maximum(r1a, a_r1)
+        ri2 = np.minimum(r2a, a_r2)
+        ci1 = np.maximum(c1a, a_c1)
+        ci2 = np.minimum(c2a, a_c2)
+        has_overlap = (ri1 <= ri2) & (ci1 <= ci2)
+
+        isect_sum = np.zeros(len(a_r1), dtype=np.int32)
+        isect_cnt = np.zeros(len(a_r1), dtype=np.int32)
+        if has_overlap.any():
+            m = has_overlap
+            isect_sum[m] = (sp[ri2[m] + 1, ci2[m] + 1] - sp[ri1[m], ci2[m] + 1]
+                            - sp[ri2[m] + 1, ci1[m]] + sp[ri1[m], ci1[m]])
+            isect_cnt[m] = (cp[ri2[m] + 1, ci2[m] + 1] - cp[ri1[m], ci2[m] + 1]
+                            - cp[ri2[m] + 1, ci1[m]] + cp[ri1[m], ci1[m]])
+
+        new_sum = a_sum - isect_sum
+        new_cnt = a_cnt - isect_cnt
+        surviving = int(np.sum((new_sum == 10) & (new_cnt >= 2)))
+        evals[ci] = cnta + surviving * weight
+
+    return evals
+
+
+def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
+                     weight: float = 0.3) -> tuple[list, int]:
+    """贪心补全。lookahead=True 时每步评估对后续的影响。"""
     g = grid.copy()
     moves = []
     total = 0
     while True:
-        rects = find_valid_rectangles(g, top_n=1)
-        if not rects:
+        if lookahead:
+            all_rects = find_valid_rectangles(g, top_n=0)
+        else:
+            all_rects = find_valid_rectangles(g, top_n=1)
+        if not all_rects:
             break
-        r1, c1, r2, c2, cnt = rects[0]
+
+        if not lookahead or len(all_rects) == 1:
+            r1, c1, r2, c2, cnt = all_rects[0]
+        else:
+            candidates = all_rects[:15]
+            sp, cp = _build_prefix(g)
+            arr = np.array(all_rects, dtype=np.int32)
+            evals = _eval_candidates(candidates, arr, sp, cp, weight)
+            r1, c1, r2, c2, cnt = candidates[int(np.argmax(evals))]
+
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
         total += eliminated
@@ -87,7 +153,7 @@ def _greedy_complete(grid: np.ndarray) -> tuple[list, int]:
 def _simulate_game(
     grid: np.ndarray, rng: np.random.Generator, temp: float = 2.0
 ) -> tuple[list, int]:
-    """随机加权贪心模拟。temp 控制贪心程度：越高越贪心。"""
+    """随机加权贪心模拟（无前瞻，快速）。"""
     g = grid.copy()
     moves = []
     total = 0
@@ -105,6 +171,41 @@ def _simulate_game(
             idx = rng.choice(len(rects), p=weights)
 
         r1, c1, r2, c2, cnt = rects[idx]
+        eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
+        moves.append((r1, c1, r2, c2))
+        total += eliminated
+        g[r1:r2 + 1, c1:c2 + 1] = 0
+
+    return moves, total
+
+
+def _simulate_lookahead(
+    grid: np.ndarray, rng: np.random.Generator, weight: float = 0.3
+) -> tuple[list, int]:
+    """前瞻模拟：评估每步对后续可行矩形数量的影响。"""
+    g = grid.copy()
+    moves = []
+    total = 0
+
+    while True:
+        all_rects = find_valid_rectangles(g, top_n=0)
+        if not all_rects:
+            break
+
+        if len(all_rects) == 1:
+            r1, c1, r2, c2, cnt = all_rects[0]
+        else:
+            candidates = all_rects[:10]
+            sp, cp = _build_prefix(g)
+            arr = np.array(all_rects, dtype=np.int32)
+            evals = _eval_candidates(candidates, arr, sp, cp, weight)
+
+            # 加权随机选择
+            evals = evals ** 2
+            evals /= evals.sum()
+            idx = rng.choice(len(candidates), p=evals)
+            r1, c1, r2, c2, cnt = candidates[idx]
+
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
         total += eliminated
@@ -218,21 +319,17 @@ def solve(
         if elapsed() >= beam_deadline or hit_target():
             break
 
-    # 贪心补全所有 beam，建立基线
-    for g, moves, score in beams:
-        extra_moves, extra_score = _greedy_complete(g)
-        total = score + extra_score
-        if total > best_score:
-            best_score = total
-            best_moves = moves + extra_moves
+    # 前瞻贪心补全所有 beam + 快照，建立基线
+    all_states = [(g, moves, score) for g, moves, score in beams]
+    all_states += [(g, m, s) for g, m, s, _ in snapshot_pool]
 
-    # 也贪心补全快照状态（不同的中间路径可能有不同结局）
-    for g, prefix_moves, prefix_score, _ in snapshot_pool:
-        extra_moves, extra_score = _greedy_complete(g)
-        total = prefix_score + extra_score
-        if total > best_score:
-            best_score = total
-            best_moves = prefix_moves + extra_moves
+    for g, moves, score in all_states:
+        for la in (False, True):
+            extra_moves, extra_score = _greedy_complete(g, lookahead=la)
+            total = score + extra_score
+            if total > best_score:
+                best_score = total
+                best_moves = moves + extra_moves
 
     log.info(
         f"Phase1 beam: depth={depth}, {best_score}分/{total_cells}, "
@@ -285,15 +382,15 @@ def solve(
         log.info(f"达标 {best_score}>={target_score}, {elapsed():.1f}s")
         return best_moves, best_score
 
-    # === Phase 3: Root MC（多温度策略，深度探索不同路径）===
+    # === Phase 3: 前瞻 MC（多权重策略）===
     mc_count = 0
     mc_improved = 0
-    # 混合温度：贪心(3.0) + 标准(2.0) + 平衡(1.0) + 探索(0.5)
-    mc_temps = [3.0, 2.0, 2.0, 1.0, 0.5]
+    # 混合权重：贪心(0.05) + 平衡(0.2/0.3) + 保守(0.6) + 极保守(1.0)
+    mc_weights = [0.05, 0.2, 0.3, 0.6, 1.0]
 
     while elapsed() < time_budget and not hit_target():
-        temp = mc_temps[mc_count % len(mc_temps)]
-        mc_moves, mc_score = _simulate_game(grid, rng, temp)
+        w = mc_weights[mc_count % len(mc_weights)]
+        mc_moves, mc_score = _simulate_lookahead(grid, rng, weight=w)
         mc_count += 1
         if mc_score > best_score:
             best_score = mc_score
@@ -301,9 +398,9 @@ def solve(
             mc_improved += 1
             log.info(
                 f"MC #{mc_count}: {best_score}分/{total_cells}, "
-                f"{len(best_moves)}步, temp={temp} ({elapsed():.1f}s)"
+                f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
             )
-        if mc_count % 5000 == 0:
+        if mc_count % 1000 == 0:
             log.debug(f"MC进度: {mc_count}次, 最优{best_score}分 ({elapsed():.1f}s)")
 
     log.info(f"Phase3 MC: {mc_count}次, 改进{mc_improved}次")
