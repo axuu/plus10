@@ -75,25 +75,54 @@ def find_valid_rectangles(
     ]
 
 
-def _eval_candidates(cand_arr, all_arr, sp, cp, weight: float):
-    """全向量化前瞻评估（numpy 广播，无 Python 循环）。
+def _find_potential(grid: np.ndarray, prefix=None):
+    """找 sum∈[10,20] 且 cnt>=2 的全部矩形（含当前有效 + 可解锁的）。
+
+    Returns: (np, 6) int32 数组，列=(r1,c1,r2,c2,cnt,sum)
+    """
+    rows, cols = grid.shape
+    key = (rows, cols)
+    if key not in _INDEX_CACHE:
+        find_valid_rectangles(grid, top_n=1)  # 触发缓存
+    r1, c1, r2, c2 = _INDEX_CACHE[key]
+    sp, cp = prefix if prefix else _build_prefix(grid)
+
+    rect_sum = sp[r2 + 1, c2 + 1] - sp[r1, c2 + 1] - sp[r2 + 1, c1] + sp[r1, c1]
+    rect_cnt = cp[r2 + 1, c2 + 1] - cp[r1, c2 + 1] - cp[r2 + 1, c1] + cp[r1, c1]
+
+    mask = (rect_sum >= 10) & (rect_sum <= 20) & (rect_cnt >= 2)
+    idx = np.nonzero(mask)[0]
+    if len(idx) == 0:
+        return np.empty((0, 6), dtype=np.int32)
+
+    return np.column_stack([
+        r1[idx], c1[idx], r2[idx], c2[idx], rect_cnt[idx], rect_sum[idx]
+    ]).astype(np.int32)
+
+
+def _eval_candidates(cand_arr, potential_arr, sp, cp, weight: float):
+    """解锁感知的前瞻评估：考虑清除后哪些 sum>10 矩形被激活。
 
     Args:
-        cand_arr: 候选矩形 (nc, 5) int32
-        all_arr:  全部有效矩形 (nr, 5) int32
+        cand_arr: 候选矩形 (nc, 5) int32, 列=(r1,c1,r2,c2,cnt)
+        potential_arr: 潜在矩形 (np, 6) int32, 列=(r1,c1,r2,c2,cnt,sum)
+                       包含 sum∈[10,20] 的全部矩形
     Returns:
         每个候选的 eval 分数 (nc,) float
     """
-    # (nc,1) × (1,nr) 广播
-    ri1 = np.maximum(cand_arr[:, 0:1], all_arr[np.newaxis, :, 0])
-    ri2 = np.minimum(cand_arr[:, 2:3], all_arr[np.newaxis, :, 2])
-    ci1 = np.maximum(cand_arr[:, 1:2], all_arr[np.newaxis, :, 1])
-    ci2 = np.minimum(cand_arr[:, 3:4], all_arr[np.newaxis, :, 3])
+    if len(potential_arr) == 0:
+        return cand_arr[:, 4].astype(float)
+
+    # (nc,1) × (1,np) 广播
+    ri1 = np.maximum(cand_arr[:, 0:1], potential_arr[np.newaxis, :, 0])
+    ri2 = np.minimum(cand_arr[:, 2:3], potential_arr[np.newaxis, :, 2])
+    ci1 = np.maximum(cand_arr[:, 1:2], potential_arr[np.newaxis, :, 1])
+    ci2 = np.minimum(cand_arr[:, 3:4], potential_arr[np.newaxis, :, 3])
     has_overlap = (ri1 <= ri2) & (ci1 <= ci2)
 
-    nc, nr = len(cand_arr), len(all_arr)
-    isect_sum = np.zeros((nc, nr), dtype=np.int32)
-    isect_cnt = np.zeros((nc, nr), dtype=np.int32)
+    nc, np_ = len(cand_arr), len(potential_arr)
+    isect_sum = np.zeros((nc, np_), dtype=np.int32)
+    isect_cnt = np.zeros((nc, np_), dtype=np.int32)
     if has_overlap.any():
         m = has_overlap
         isect_sum[m] = (sp[ri2[m] + 1, ci2[m] + 1] - sp[ri1[m], ci2[m] + 1]
@@ -101,39 +130,51 @@ def _eval_candidates(cand_arr, all_arr, sp, cp, weight: float):
         isect_cnt[m] = (cp[ri2[m] + 1, ci2[m] + 1] - cp[ri1[m], ci2[m] + 1]
                         - cp[ri2[m] + 1, ci1[m]] + cp[ri1[m], ci1[m]])
 
-    a_sum = (sp[all_arr[:, 2] + 1, all_arr[:, 3] + 1]
-             - sp[all_arr[:, 0], all_arr[:, 3] + 1]
-             - sp[all_arr[:, 2] + 1, all_arr[:, 1]]
-             + sp[all_arr[:, 0], all_arr[:, 1]])[np.newaxis, :]
-
+    # 潜在矩形的原始 sum: (1, np_)
+    a_sum = potential_arr[np.newaxis, :, 5]
     new_sum = a_sum - isect_sum
-    new_cnt = all_arr[np.newaxis, :, 4] - isect_cnt
-    surviving = np.sum((new_sum == 10) & (new_cnt >= 2), axis=1).astype(float)
+    new_cnt = potential_arr[np.newaxis, :, 4] - isect_cnt
 
-    return cand_arr[:, 4].astype(float) + surviving * weight
+    # 清除候选后有多少矩形变为 sum=10 且 cnt>=2（含存活 + 新解锁）
+    future_valid = np.sum((new_sum == 10) & (new_cnt >= 2), axis=1).astype(float)
+
+    return cand_arr[:, 4].astype(float) + future_valid * weight
 
 
 def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
                      weight: float = 0.3) -> tuple[list, int]:
-    """贪心补全。lookahead=True 时每步评估对后续的影响。"""
+    """贪心补全。lookahead=True 时用解锁感知评估。"""
     g = grid.copy()
     moves = []
     total = 0
     while True:
         if lookahead:
             sp, cp = _build_prefix(g)
-            all_rects = find_valid_rectangles(g, top_n=0, prefix=(sp, cp))
+            # 一次扫描同时得到潜在池和有效矩形
+            potential = _find_potential(g, prefix=(sp, cp))
+            if len(potential) == 0:
+                break
+            valid_mask = potential[:, 5] == 10
+            if not valid_mask.any():
+                break
+            valid_arr = potential[valid_mask]
+            # 按 cnt 降序
+            order = np.argsort(-valid_arr[:, 4])
+            valid_arr = valid_arr[order]
         else:
             all_rects = find_valid_rectangles(g, top_n=1)
-        if not all_rects:
-            break
+            if not all_rects:
+                break
 
-        if not lookahead or len(all_rects) == 1:
+        if not lookahead:
             r1, c1, r2, c2, cnt = all_rects[0]
+        elif len(valid_arr) == 1:
+            r1, c1, r2, c2 = int(valid_arr[0, 0]), int(valid_arr[0, 1]), int(valid_arr[0, 2]), int(valid_arr[0, 3])
         else:
-            arr = np.array(all_rects, dtype=np.int32)
-            evals = _eval_candidates(arr[:15], arr, sp, cp, weight)
-            r1, c1, r2, c2, cnt = all_rects[int(np.argmax(evals))]
+            nc = min(15, len(valid_arr))
+            evals = _eval_candidates(valid_arr[:nc, :5], potential, sp, cp, weight)
+            best = int(np.argmax(evals))
+            r1, c1, r2, c2 = int(valid_arr[best, 0]), int(valid_arr[best, 1]), int(valid_arr[best, 2]), int(valid_arr[best, 3])
 
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
@@ -174,29 +215,34 @@ def _simulate_game(
 def _simulate_lookahead(
     grid: np.ndarray, rng: np.random.Generator, weight: float = 0.3
 ) -> tuple[list, int]:
-    """前瞻模拟：评估每步对后续可行矩形数量的影响。"""
+    """解锁感知的前瞻模拟：评估每步对未来可行矩形（含解锁）的影响。"""
     g = grid.copy()
     moves = []
     total = 0
 
     while True:
         sp, cp = _build_prefix(g)
-        all_rects = find_valid_rectangles(g, top_n=0, prefix=(sp, cp))
-        if not all_rects:
+        # 一次扫描：潜在池 + 从中筛出有效矩形
+        potential = _find_potential(g, prefix=(sp, cp))
+        if len(potential) == 0:
             break
+        valid_mask = potential[:, 5] == 10
+        if not valid_mask.any():
+            break
+        valid_arr = potential[valid_mask]
+        order = np.argsort(-valid_arr[:, 4])
+        valid_arr = valid_arr[order]
 
-        if len(all_rects) == 1:
-            r1, c1, r2, c2, cnt = all_rects[0]
+        if len(valid_arr) == 1:
+            r1, c1, r2, c2 = int(valid_arr[0, 0]), int(valid_arr[0, 1]), int(valid_arr[0, 2]), int(valid_arr[0, 3])
         else:
-            arr = np.array(all_rects, dtype=np.int32)
-            nc = min(10, len(arr))
-            evals = _eval_candidates(arr[:nc], arr, sp, cp, weight)
+            nc = min(10, len(valid_arr))
+            evals = _eval_candidates(valid_arr[:nc, :5], potential, sp, cp, weight)
 
-            # 加权随机选择
             evals = evals ** 2
             evals /= evals.sum()
             idx = rng.choice(nc, p=evals)
-            r1, c1, r2, c2, cnt = all_rects[idx]
+            r1, c1, r2, c2 = int(valid_arr[idx, 0]), int(valid_arr[idx, 1]), int(valid_arr[idx, 2]), int(valid_arr[idx, 3])
 
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
