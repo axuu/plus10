@@ -5,6 +5,14 @@ import time
 
 log = logging.getLogger("solver")
 
+# 尝试加载 Cython 加速模块
+try:
+    from _solver_fast import find_potential_c, eval_candidates_c
+    _USE_CYTHON = True
+    log.info("Cython 加速模块已加载")
+except ImportError:
+    _USE_CYTHON = False
+
 # 缓存 meshgrid 索引，同尺寸 grid 只算一次
 _INDEX_CACHE: dict[tuple[int, int], tuple] = {}
 
@@ -149,32 +157,37 @@ def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
     total = 0
     while True:
         if lookahead:
-            sp, cp = _build_prefix(g)
-            # 一次扫描同时得到潜在池和有效矩形
-            potential = _find_potential(g, prefix=(sp, cp))
-            if len(potential) == 0:
-                break
-            valid_mask = potential[:, 5] == 10
-            if not valid_mask.any():
-                break
-            valid_arr = potential[valid_mask]
-            # 按 cnt 降序
-            order = np.argsort(-valid_arr[:, 4])
-            valid_arr = valid_arr[order]
+            if _USE_CYTHON:
+                valid_list, potential, sp, cp = find_potential_c(g)
+                if not valid_list:
+                    break
+            else:
+                sp, cp = _build_prefix(g)
+                potential = _find_potential(g, prefix=(sp, cp))
+                if len(potential) == 0:
+                    break
+                valid_mask = potential[:, 5] == 10
+                if not valid_mask.any():
+                    break
+                va = potential[valid_mask]
+                order = np.argsort(-va[:, 4])
+                valid_list = [(int(va[i,0]),int(va[i,1]),int(va[i,2]),int(va[i,3]),int(va[i,4])) for i in order]
         else:
-            all_rects = find_valid_rectangles(g, top_n=1)
-            if not all_rects:
+            valid_list = find_valid_rectangles(g, top_n=1)
+            if not valid_list:
                 break
 
-        if not lookahead:
-            r1, c1, r2, c2, cnt = all_rects[0]
-        elif len(valid_arr) == 1:
-            r1, c1, r2, c2 = int(valid_arr[0, 0]), int(valid_arr[0, 1]), int(valid_arr[0, 2]), int(valid_arr[0, 3])
+        if not lookahead or len(valid_list) == 1:
+            r1, c1, r2, c2, cnt = valid_list[0]
         else:
-            nc = min(15, len(valid_arr))
-            evals = _eval_candidates(valid_arr[:nc, :5], potential, sp, cp, weight)
+            nc = min(15, len(valid_list))
+            cand_arr = np.array(valid_list[:nc], dtype=np.int32)
+            if _USE_CYTHON:
+                evals = eval_candidates_c(cand_arr, potential, sp, cp, weight)
+            else:
+                evals = _eval_candidates(cand_arr, potential, sp, cp, weight)
             best = int(np.argmax(evals))
-            r1, c1, r2, c2 = int(valid_arr[best, 0]), int(valid_arr[best, 1]), int(valid_arr[best, 2]), int(valid_arr[best, 3])
+            r1, c1, r2, c2, cnt = valid_list[best]
 
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
@@ -221,28 +234,36 @@ def _simulate_lookahead(
     total = 0
 
     while True:
-        sp, cp = _build_prefix(g)
-        # 一次扫描：潜在池 + 从中筛出有效矩形
-        potential = _find_potential(g, prefix=(sp, cp))
-        if len(potential) == 0:
-            break
-        valid_mask = potential[:, 5] == 10
-        if not valid_mask.any():
-            break
-        valid_arr = potential[valid_mask]
-        order = np.argsort(-valid_arr[:, 4])
-        valid_arr = valid_arr[order]
-
-        if len(valid_arr) == 1:
-            r1, c1, r2, c2 = int(valid_arr[0, 0]), int(valid_arr[0, 1]), int(valid_arr[0, 2]), int(valid_arr[0, 3])
+        if _USE_CYTHON:
+            valid_list, potential, sp, cp = find_potential_c(g)
+            if not valid_list:
+                break
         else:
-            nc = min(10, len(valid_arr))
-            evals = _eval_candidates(valid_arr[:nc, :5], potential, sp, cp, weight)
+            sp, cp = _build_prefix(g)
+            potential = _find_potential(g, prefix=(sp, cp))
+            if len(potential) == 0:
+                break
+            valid_mask = potential[:, 5] == 10
+            if not valid_mask.any():
+                break
+            va = potential[valid_mask]
+            order = np.argsort(-va[:, 4])
+            valid_list = [(int(va[i,0]),int(va[i,1]),int(va[i,2]),int(va[i,3]),int(va[i,4])) for i in order]
+
+        if len(valid_list) == 1:
+            r1, c1, r2, c2, cnt = valid_list[0]
+        else:
+            nc = min(10, len(valid_list))
+            cand_arr = np.array(valid_list[:nc], dtype=np.int32)
+            if _USE_CYTHON:
+                evals = eval_candidates_c(cand_arr, potential, sp, cp, weight)
+            else:
+                evals = _eval_candidates(cand_arr, potential, sp, cp, weight)
 
             evals = evals ** 2
             evals /= evals.sum()
             idx = rng.choice(nc, p=evals)
-            r1, c1, r2, c2 = int(valid_arr[idx, 0]), int(valid_arr[idx, 1]), int(valid_arr[idx, 2]), int(valid_arr[idx, 3])
+            r1, c1, r2, c2, cnt = valid_list[idx]
 
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
