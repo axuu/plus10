@@ -218,9 +218,15 @@ def _perturb_solution(
     if len(moves) <= 2:
         return moves, score
 
-    # 随机删除 1~6 步
-    n_remove = int(rng.integers(1, min(7, len(moves))))
-    remove_set = set(rng.choice(len(moves), size=n_remove, replace=False).tolist())
+    # 50% 散点删除 (1-6步)，50% 段删除 (连续块，最多半数步骤)
+    if rng.random() < 0.5 or len(moves) <= 4:
+        n_remove = int(rng.integers(1, min(7, len(moves))))
+        remove_set = set(rng.choice(len(moves), size=n_remove, replace=False).tolist())
+    else:
+        max_seg = max(2, len(moves) // 2)
+        seg_len = int(rng.integers(2, min(max_seg + 1, len(moves))))
+        start = int(rng.integers(0, len(moves) - seg_len + 1))
+        remove_set = set(range(start, start + seg_len))
 
     # 重放剩余步骤，跳过因删除导致失效的
     g = grid.copy()
@@ -243,6 +249,37 @@ def _perturb_solution(
     else:
         extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight)
     return new_moves + extra_moves, new_score + extra_score
+
+
+def _replay_moves(grid: np.ndarray, moves: list) -> tuple[np.ndarray, list, int]:
+    """在 grid 上重放步骤序列，跳过失效的。返回 (结果grid, 有效步骤, 得分)。"""
+    g = grid.copy()
+    valid_moves = []
+    score = 0
+    for r1, c1, r2, c2 in moves:
+        sub = g[r1:r2 + 1, c1:c2 + 1]
+        if int(sub.sum()) == 10 and int(np.count_nonzero(sub)) >= 2:
+            score += int(np.count_nonzero(sub))
+            g[r1:r2 + 1, c1:c2 + 1] = 0
+            valid_moves.append((r1, c1, r2, c2))
+    return g, valid_moves, score
+
+
+def _crossover(
+    grid: np.ndarray, moves_a: list, moves_b: list,
+    rng: np.random.Generator, weight: float = 0.3,
+) -> tuple[list, int]:
+    """解交叉：取 A 的前缀 + B 的后缀，重放有效步骤后补全。"""
+    min_len = min(len(moves_a), len(moves_b))
+    if min_len <= 2:
+        return moves_a, 0  # 太短无法交叉
+
+    cut = int(rng.integers(1, min_len))
+    combined = list(moves_a[:cut]) + list(moves_b[cut:])
+    g, valid_moves, score = _replay_moves(grid, combined)
+
+    extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight)
+    return valid_moves + extra_moves, score + extra_score
 
 
 def solve(
@@ -413,8 +450,8 @@ def solve(
         log.info(f"达标 {best_score}>={target_score}, {elapsed():.1f}s")
         return best_moves, best_score
 
-    # === Phase 3: 交替搜索（MC 探索 + 扰动调优 + 解池）===
-    POOL_SIZE = 5
+    # === Phase 3: 交替搜索（MC + 扰动 + 交叉 + 解池 + 重启）===
+    POOL_SIZE = 8
     pool: list[tuple[list, int]] = []
     if best_moves:
         pool.append((best_moves, best_score))
@@ -423,64 +460,98 @@ def solve(
     mc_improved = 0
     perturb_count = 0
     perturb_improved = 0
+    cross_count = 0
+    cross_improved = 0
     explore_weights = [0.05, 0.2, 0.3, 0.6, 1.0]
     total_iter = 0
-    MC_WARMUP = 20  # 先跑一批 MC 填充解池
+    no_improve = 0
+    MC_WARMUP = 20
+    RESTART_THRESHOLD = 5000
 
     while elapsed() < time_budget and not hit_target():
         total_iter += 1
         w = explore_weights[total_iter % len(explore_weights)]
 
-        # MC 探索 or 扰动调优（交替，初期偏 MC，之后 1/5 MC + 4/5 扰动）
-        do_mc = total_iter <= MC_WARMUP or total_iter % 5 == 0 or not pool
+        # 重启：长时间无改进 → 清池 + MC 爆发
+        if no_improve >= RESTART_THRESHOLD:
+            log.debug(f"重启: {no_improve}次无改进 ({elapsed():.1f}s)")
+            no_improve = 0
+            pool = [(best_moves, best_score)]
+
+        # 操作选择：初期 MC; 之后 1/7 MC + 2/7 交叉 + 4/7 扰动
+        in_warmup = total_iter <= MC_WARMUP or not pool
+        force_mc = no_improve >= RESTART_THRESHOLD - MC_WARMUP
+        do_mc = in_warmup or total_iter % 7 == 0 or force_mc
+        do_cross = not do_mc and total_iter % 7 in (1, 2) and len(pool) >= 2
+
+        improved = False
 
         if do_mc:
             mc_moves, mc_score = _simulate_lookahead(grid, rng, weight=w)
             mc_count += 1
             if mc_score > best_score:
-                best_score = mc_score
-                best_moves = mc_moves
+                best_score, best_moves = mc_score, mc_moves
                 mc_improved += 1
+                improved = True
                 log.info(
                     f"MC #{mc_count}: {best_score}分/{total_cells}, "
                     f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
                 )
-            # 加入解池
             pool.append((mc_moves, mc_score))
+
+        elif do_cross:
+            i = int(rng.integers(len(pool)))
+            j = int(rng.integers(len(pool) - 1))
+            if j >= i:
+                j += 1
+            new_moves, new_score = _crossover(
+                grid, pool[i][0], pool[j][0], rng, weight=w
+            )
+            cross_count += 1
+            if new_score > best_score:
+                best_score, best_moves = new_score, new_moves
+                cross_improved += 1
+                improved = True
+                log.info(
+                    f"Cross #{cross_count}: {best_score}分/{total_cells}, "
+                    f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
+                )
+            pool.append((new_moves, new_score))
+
         else:
-            # 从解池中随机选一个解进行扰动
             pidx = int(rng.integers(len(pool)))
-            p_moves, p_score = pool[pidx]
+            p_moves, _ = pool[pidx]
             use_random = rng.random() < 0.3
             new_moves, new_score = _perturb_solution(
-                grid, p_moves, p_score, rng, weight=w, use_random=use_random
+                grid, p_moves, 0, rng, weight=w, use_random=use_random
             )
             perturb_count += 1
             if new_score > best_score:
-                best_score = new_score
-                best_moves = new_moves
+                best_score, best_moves = new_score, new_moves
                 perturb_improved += 1
+                improved = True
                 log.info(
                     f"Perturb #{perturb_count}: {best_score}分/{total_cells}, "
                     f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
                 )
-            # 加入解池
             pool.append((new_moves, new_score))
 
-        # 定期裁剪解池：保留 top POOL_SIZE
+        no_improve = 0 if improved else no_improve + 1
+
         if len(pool) > POOL_SIZE * 2:
             pool.sort(key=lambda x: -x[1])
             del pool[POOL_SIZE:]
 
-        if total_iter % 2000 == 0:
+        if total_iter % 5000 == 0:
             log.debug(
-                f"进度: MC {mc_count}次 扰动 {perturb_count}次, "
+                f"进度: MC{mc_count} 扰动{perturb_count} 交叉{cross_count}, "
                 f"池{len(pool)}个, 最优{best_score}分 ({elapsed():.1f}s)"
             )
 
     log.info(
-        f"Phase3: MC {mc_count}次/改进{mc_improved}, "
-        f"扰动 {perturb_count}次/改进{perturb_improved}"
+        f"Phase3: MC {mc_count}/改进{mc_improved}, "
+        f"扰动 {perturb_count}/改进{perturb_improved}, "
+        f"交叉 {cross_count}/改进{cross_improved}"
     )
 
     pct = best_score / total_cells * 100 if total_cells > 0 else 0
