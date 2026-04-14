@@ -7,7 +7,7 @@ ctypedef np.int32_t INT32
 ctypedef np.float64_t FLOAT64
 
 
-def find_potential_c(np.ndarray[INT32, ndim=2] grid):
+def find_potential_c(grid_input):
     """一次扫描：构建前缀和 + 找出 sum∈[10,20] 且 cnt>=2 的全部矩形。
 
     Returns:
@@ -16,6 +16,7 @@ def find_potential_c(np.ndarray[INT32, ndim=2] grid):
         sp:         sum 前缀和
         cp:         cnt 前缀和
     """
+    cdef np.ndarray[INT32, ndim=2] grid = np.asarray(grid_input, dtype=np.int32)
     cdef int rows = grid.shape[0]
     cdef int cols = grid.shape[1]
     cdef int r1, c1, r2, c2, rsum, rcnt
