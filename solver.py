@@ -214,6 +214,38 @@ def _simulate_lookahead(
     return moves, total
 
 
+def _perturb_solution(
+    grid: np.ndarray, moves: list, score: int,
+    rng: np.random.Generator, weight: float = 0.3,
+) -> tuple[list, int]:
+    """扰动搜索：从已有方案中删除若干步，重放有效步骤后用前瞻贪心补全。"""
+    if len(moves) <= 2:
+        return moves, score
+
+    # 随机删除 1~3 步
+    n_remove = int(rng.integers(1, min(4, len(moves))))
+    remove_set = set(rng.choice(len(moves), size=n_remove, replace=False).tolist())
+
+    # 重放剩余步骤，跳过因删除导致失效的
+    g = grid.copy()
+    new_moves = []
+    new_score = 0
+    for i, (r1, c1, r2, c2) in enumerate(moves):
+        if i in remove_set:
+            continue
+        sub = g[r1:r2 + 1, c1:c2 + 1]
+        rect_sum = int(sub.sum())
+        rect_cnt = int(np.count_nonzero(sub))
+        if rect_sum == 10 and rect_cnt >= 2:
+            new_score += rect_cnt
+            g[r1:r2 + 1, c1:c2 + 1] = 0
+            new_moves.append((r1, c1, r2, c2))
+
+    # 前瞻贪心补全
+    extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight)
+    return new_moves + extra_moves, new_score + extra_score
+
+
 def solve(
     grid: np.ndarray,
     time_budget: float = 120.0,
@@ -382,13 +414,14 @@ def solve(
         log.info(f"达标 {best_score}>={target_score}, {elapsed():.1f}s")
         return best_moves, best_score
 
-    # === Phase 3: 前瞻 MC（多权重策略）===
+    # === Phase 3: 前瞻 MC（60% 剩余时间）===
+    remaining_budget = time_budget - elapsed()
+    mc_deadline = elapsed() + remaining_budget * 0.6
     mc_count = 0
     mc_improved = 0
-    # 混合权重：贪心(0.05) + 平衡(0.2/0.3) + 保守(0.6) + 极保守(1.0)
     mc_weights = [0.05, 0.2, 0.3, 0.6, 1.0]
 
-    while elapsed() < time_budget and not hit_target():
+    while elapsed() < mc_deadline and not hit_target():
         w = mc_weights[mc_count % len(mc_weights)]
         mc_moves, mc_score = _simulate_lookahead(grid, rng, weight=w)
         mc_count += 1
@@ -403,7 +436,35 @@ def solve(
         if mc_count % 1000 == 0:
             log.debug(f"MC进度: {mc_count}次, 最优{best_score}分 ({elapsed():.1f}s)")
 
-    log.info(f"Phase3 MC: {mc_count}次, 改进{mc_improved}次")
+    log.info(f"Phase3 MC: {mc_count}次, 改进{mc_improved}次, {elapsed():.1f}s")
+
+    if hit_target():
+        log.info(f"达标 {best_score}>={target_score}, {elapsed():.1f}s")
+        return best_moves, best_score
+
+    # === Phase 4: 扰动搜索（剩余时间，精细调优最优方案）===
+    perturb_count = 0
+    perturb_improved = 0
+    perturb_weights = [0.1, 0.3, 0.5, 0.8]
+
+    while elapsed() < time_budget and not hit_target() and best_moves:
+        w = perturb_weights[perturb_count % len(perturb_weights)]
+        new_moves, new_score = _perturb_solution(
+            grid, best_moves, best_score, rng, weight=w
+        )
+        perturb_count += 1
+        if new_score > best_score:
+            best_score = new_score
+            best_moves = new_moves
+            perturb_improved += 1
+            log.info(
+                f"Perturb #{perturb_count}: {best_score}分/{total_cells}, "
+                f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
+            )
+        if perturb_count % 1000 == 0:
+            log.debug(f"扰动进度: {perturb_count}次, 最优{best_score}分 ({elapsed():.1f}s)")
+
+    log.info(f"Phase4 perturb: {perturb_count}次, 改进{perturb_improved}次")
 
     pct = best_score / total_cells * 100 if total_cells > 0 else 0
     log.info(
