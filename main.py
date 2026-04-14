@@ -70,12 +70,9 @@ def main():
         )
         log.info("执行器初始化完成")
 
-        search_depth = config["solver"]["search_depth"]
-        beam_width = config["solver"].get("beam_width", 15)
-        time_budget = config["solver"].get("time_budget", 10.0)
-        n_simulations = config["solver"].get("n_simulations", 200)
-        log.info(f"搜索参数: depth={search_depth}, beam_width={beam_width}, "
-                 f"time_budget={time_budget}s, n_simulations={n_simulations}")
+        beam_width = config["solver"].get("beam_width", 30)
+        time_budget = config["solver"].get("time_budget", 120.0)
+        log.info(f"搜索参数: beam_width={beam_width}, time_budget={time_budget}s")
 
         total_score = 0
 
@@ -150,90 +147,51 @@ def main():
             if loop_count == 1:
                 np.savetxt("debug/grid.txt", grid, fmt="%d", delimiter=" ")
 
-            # --- 规划（支持目标分数自动重跑）---
-            best_moves = []
-            best_expected = 0
-            best_remaining = nonzero
-            run_count = 0
-            target_score = 0
-            no_improve_count = 0
-            max_no_improve = 5  # 连续无提升次数上限
-
-            def _run_once():
-                nonlocal run_count, best_moves, best_expected, best_remaining, no_improve_count
-                run_count += 1
-                t0 = time.perf_counter()
-                moves = solve(
-                    grid,
-                    depth=search_depth,
-                    beam_width=beam_width,
-                    n_simulations=n_simulations,
-                    time_budget=time_budget,
-                )
-                t1 = time.perf_counter()
-
-                if not moves:
-                    return None, 0, nonzero
-
-                g_preview = grid.copy()
-                expected = 0
-                for r1, c1, r2, c2 in moves:
-                    expected += int(np.count_nonzero(g_preview[r1:r2 + 1, c1:c2 + 1]))
-                    g_preview[r1:r2 + 1, c1:c2 + 1] = 0
-                rem = int(np.count_nonzero(g_preview))
-
-                improved = expected > best_expected
-                if improved:
-                    best_moves = moves
-                    best_expected = expected
-                    best_remaining = rem
-                    no_improve_count = 0
-                else:
-                    no_improve_count += 1
-
-                tag = "★" if improved else " "
-                elapsed = (t1 - t0) * 1000
-                print(f"  {tag} 第{run_count:2d}次: 消{expected:3d} 剩{rem:3d} | "
-                      f"最优: 消{best_expected} 剩{best_remaining} | {elapsed:.0f}ms")
-                return moves, expected, rem
-
-            # 第一次规划
-            print(f"\n规划中...")
-            _run_once()
+            # --- 规划 ---
+            print(f"\n快速规划中...")
+            best_moves, best_score = solve(
+                grid,
+                time_budget=min(5.0, time_budget),
+                beam_width=beam_width,
+            )
 
             if not best_moves:
                 print("没有可消除的矩形。")
                 continue
 
+            print(f"  消{best_score} 剩{nonzero - best_score} ({len(best_moves)}步)")
+
             while True:
-                print(f"\nEnter=执行  r=重跑一次  数字=设目标自动跑(如120)  {hotkeys['quit']}=退出")
+                print(f"\nEnter=执行  r=重跑  数字=目标分(深度优化{int(time_budget)}s)  {hotkeys['quit']}=退出")
                 choice = input("> ").strip().lower()
                 if not running:
                     break
 
                 if choice == "r":
-                    _run_once()
+                    moves, score = solve(
+                        grid,
+                        time_budget=min(5.0, time_budget),
+                        beam_width=beam_width,
+                        warm_start=(best_moves, best_score),
+                    )
+                    best_moves, best_score = moves, score
+                    print(f"  消{best_score} 剩{nonzero - best_score} ({len(best_moves)}步)")
                 elif choice.isdigit():
-                    target_score = int(choice)
-                    no_improve_count = 0
-                    total_budget = 30.0  # 总时间预算
-                    t_start = time.perf_counter()
-                    print(f"自动规划中，目标 {target_score}，总时限 {total_budget:.0f}s...")
-                    while (best_expected < target_score
-                           and no_improve_count < max_no_improve
-                           and time.perf_counter() - t_start < total_budget):
-                        if not running:
-                            break
-                        _run_once()
-                    elapsed_total = time.perf_counter() - t_start
-                    if best_expected >= target_score:
-                        print(f"达标! 最优 {best_expected} >= 目标 {target_score} ({elapsed_total:.1f}s)")
+                    target = int(choice)
+                    print(f"深度优化中，目标{target}，时限{time_budget:.0f}s...")
+                    moves, score = solve(
+                        grid,
+                        time_budget=time_budget,
+                        target_score=target,
+                        beam_width=beam_width,
+                        warm_start=(best_moves, best_score),
+                    )
+                    best_moves, best_score = moves, score
+                    if best_score >= target:
+                        print(f"达标! 消{best_score} >= 目标{target}")
                     else:
-                        reason = (f"超时 {elapsed_total:.1f}s" if elapsed_total >= total_budget
-                                  else f"连续 {max_no_improve} 次未提升")
-                        print(f"{reason}，停止。最优: 消{best_expected} 剩{best_remaining}")
+                        print(f"优化完成。最优: 消{best_score} 剩{nonzero - best_score}")
                 else:
-                    # Enter 或其他：执行
                     break
 
             moves = best_moves

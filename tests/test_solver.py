@@ -1,6 +1,6 @@
 # tests/test_solver.py
 import numpy as np
-from solver import find_valid_rectangles
+from solver import find_valid_rectangles, solve
 
 
 def test_find_single_pair_horizontal():
@@ -9,7 +9,7 @@ def test_find_single_pair_horizontal():
     grid[0][0] = 3
     grid[0][1] = 7
     rects = find_valid_rectangles(grid)
-    assert (0, 0, 0, 1) in rects
+    assert any(r[:4] == (0, 0, 0, 1) for r in rects)
 
 
 def test_find_single_pair_vertical():
@@ -18,16 +18,14 @@ def test_find_single_pair_vertical():
     grid[0][0] = 1
     grid[1][0] = 9
     rects = find_valid_rectangles(grid)
-    assert (0, 0, 1, 0) in rects
+    assert any(r[:4] == (0, 0, 1, 0) for r in rects)
 
 
 def test_no_valid_rectangles():
-    """全1矩阵，没有和为10的矩形（单格不算）"""
+    """全1矩阵，横向10格的行和=10应被找到"""
     grid = np.ones((16, 10), dtype=int)
     rects = find_valid_rectangles(grid)
-    # 每个矩形至少2个非空数字，最小矩形2格和=2，不等于10
-    # 10个1的和=10，所以横向10格的行应该被找到
-    assert any(r for r in rects)
+    assert len(rects) > 0
 
 
 def test_rectangle_with_empty_cells():
@@ -35,21 +33,16 @@ def test_rectangle_with_empty_cells():
     grid = np.zeros((16, 10), dtype=int)
     grid[0][0] = 4
     grid[0][2] = 6
-    # (0,0)到(0,2) 包含 4,0,6 和=10
     rects = find_valid_rectangles(grid)
-    assert (0, 0, 0, 2) in rects
+    assert any(r[:4] == (0, 0, 0, 2) for r in rects)
 
 
 def test_must_have_at_least_two_nonzero():
-    """单个数字10不存在(1-9)，所以不需要特殊处理，但确保单格不被选"""
+    """单格不被选"""
     grid = np.zeros((16, 10), dtype=int)
     grid[0][0] = 5
     rects = find_valid_rectangles(grid)
-    # 单格 5 != 10，不应在结果中
-    assert (0, 0, 0, 0) not in rects
-
-
-from solver import solve
+    assert not any(r[:4] == (0, 0, 0, 0) for r in rects)
 
 
 def test_solve_simple_pair():
@@ -57,13 +50,14 @@ def test_solve_simple_pair():
     grid = np.zeros((16, 10), dtype=int)
     grid[0][0] = 2
     grid[0][1] = 8
-    result = solve(grid, depth=1)
-    assert result is not None
-    assert result == (0, 0, 0, 1)
+    moves, score = solve(grid, time_budget=2.0)
+    assert len(moves) > 0
+    assert moves[0] == (0, 0, 0, 1)
+    assert score == 2
 
 
 def test_solve_prefers_more_digits():
-    """应该优先消除更多数字的矩形"""
+    """应该能清除所有数字"""
     grid = np.zeros((16, 10), dtype=int)
     # 选项1: 2+8=10, 消2个
     grid[0][0] = 2
@@ -73,20 +67,44 @@ def test_solve_prefers_more_digits():
     grid[2][1] = 2
     grid[2][2] = 3
     grid[2][3] = 4
-    result = solve(grid, depth=1)
-    assert result == (2, 0, 2, 3)
+    moves, score = solve(grid, time_budget=2.0)
+    assert score == 6  # 全部6个数字都能被清除
 
 
 def test_solve_no_moves():
     """没有可消的情况"""
     grid = np.zeros((16, 10), dtype=int)
     grid[0][0] = 1
-    result = solve(grid, depth=3)
-    assert result is None
+    moves, score = solve(grid, time_budget=1.0)
+    assert moves == []
+    assert score == 0
 
 
 def test_solve_empty_grid():
     """空网格"""
     grid = np.zeros((16, 10), dtype=int)
-    result = solve(grid, depth=3)
-    assert result is None
+    moves, score = solve(grid, time_budget=1.0)
+    assert moves == []
+    assert score == 0
+
+
+def test_solve_with_target_score():
+    """目标分数达标时提前停止"""
+    grid = np.zeros((16, 10), dtype=int)
+    grid[0][0] = 2
+    grid[0][1] = 8
+    grid[1][0] = 3
+    grid[1][1] = 7
+    moves, score = solve(grid, time_budget=2.0, target_score=4)
+    assert score >= 4
+
+
+def test_solve_warm_start():
+    """热启动不会返回更差的结果"""
+    grid = np.zeros((16, 10), dtype=int)
+    grid[0][0] = 2
+    grid[0][1] = 8
+    warm_moves = [(0, 0, 0, 1)]
+    warm_score = 2
+    moves, score = solve(grid, time_budget=1.0, warm_start=(warm_moves, warm_score))
+    assert score >= warm_score
