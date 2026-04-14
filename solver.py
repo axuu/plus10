@@ -217,13 +217,17 @@ def _simulate_lookahead(
 def _perturb_solution(
     grid: np.ndarray, moves: list, score: int,
     rng: np.random.Generator, weight: float = 0.3,
+    use_random: bool = False,
 ) -> tuple[list, int]:
-    """扰动搜索：从已有方案中删除若干步，重放有效步骤后用前瞻贪心补全。"""
+    """扰动搜索：从已有方案中删除若干步，重放有效步骤后重新补全。
+
+    use_random=True 时用随机前瞻补全（增加多样性），否则用确定性前瞻贪心。
+    """
     if len(moves) <= 2:
         return moves, score
 
-    # 随机删除 1~3 步
-    n_remove = int(rng.integers(1, min(4, len(moves))))
+    # 随机删除 1~6 步
+    n_remove = int(rng.integers(1, min(7, len(moves))))
     remove_set = set(rng.choice(len(moves), size=n_remove, replace=False).tolist())
 
     # 重放剩余步骤，跳过因删除导致失效的
@@ -241,8 +245,11 @@ def _perturb_solution(
             g[r1:r2 + 1, c1:c2 + 1] = 0
             new_moves.append((r1, c1, r2, c2))
 
-    # 前瞻贪心补全
-    extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight)
+    # 补全：随机前瞻 or 确定性前瞻贪心
+    if use_random:
+        extra_moves, extra_score = _simulate_lookahead(g, rng, weight=weight)
+    else:
+        extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight)
     return new_moves + extra_moves, new_score + extra_score
 
 
@@ -414,57 +421,75 @@ def solve(
         log.info(f"达标 {best_score}>={target_score}, {elapsed():.1f}s")
         return best_moves, best_score
 
-    # === Phase 3: 前瞻 MC（60% 剩余时间）===
-    remaining_budget = time_budget - elapsed()
-    mc_deadline = elapsed() + remaining_budget * 0.6
+    # === Phase 3: 交替搜索（MC 探索 + 扰动调优 + 解池）===
+    POOL_SIZE = 5
+    pool: list[tuple[list, int]] = []
+    if best_moves:
+        pool.append((best_moves, best_score))
+
     mc_count = 0
     mc_improved = 0
-    mc_weights = [0.05, 0.2, 0.3, 0.6, 1.0]
-
-    while elapsed() < mc_deadline and not hit_target():
-        w = mc_weights[mc_count % len(mc_weights)]
-        mc_moves, mc_score = _simulate_lookahead(grid, rng, weight=w)
-        mc_count += 1
-        if mc_score > best_score:
-            best_score = mc_score
-            best_moves = mc_moves
-            mc_improved += 1
-            log.info(
-                f"MC #{mc_count}: {best_score}分/{total_cells}, "
-                f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
-            )
-        if mc_count % 1000 == 0:
-            log.debug(f"MC进度: {mc_count}次, 最优{best_score}分 ({elapsed():.1f}s)")
-
-    log.info(f"Phase3 MC: {mc_count}次, 改进{mc_improved}次, {elapsed():.1f}s")
-
-    if hit_target():
-        log.info(f"达标 {best_score}>={target_score}, {elapsed():.1f}s")
-        return best_moves, best_score
-
-    # === Phase 4: 扰动搜索（剩余时间，精细调优最优方案）===
     perturb_count = 0
     perturb_improved = 0
-    perturb_weights = [0.1, 0.3, 0.5, 0.8]
+    explore_weights = [0.05, 0.2, 0.3, 0.6, 1.0]
+    total_iter = 0
+    MC_WARMUP = 30  # 先跑一批 MC 填充解池
 
-    while elapsed() < time_budget and not hit_target() and best_moves:
-        w = perturb_weights[perturb_count % len(perturb_weights)]
-        new_moves, new_score = _perturb_solution(
-            grid, best_moves, best_score, rng, weight=w
-        )
-        perturb_count += 1
-        if new_score > best_score:
-            best_score = new_score
-            best_moves = new_moves
-            perturb_improved += 1
-            log.info(
-                f"Perturb #{perturb_count}: {best_score}分/{total_cells}, "
-                f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
+    while elapsed() < time_budget and not hit_target():
+        total_iter += 1
+        w = explore_weights[total_iter % len(explore_weights)]
+
+        # MC 探索 or 扰动调优（交替，初期偏 MC）
+        do_mc = total_iter <= MC_WARMUP or total_iter % 3 == 0 or not pool
+
+        if do_mc:
+            mc_moves, mc_score = _simulate_lookahead(grid, rng, weight=w)
+            mc_count += 1
+            if mc_score > best_score:
+                best_score = mc_score
+                best_moves = mc_moves
+                mc_improved += 1
+                log.info(
+                    f"MC #{mc_count}: {best_score}分/{total_cells}, "
+                    f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
+                )
+            # 加入解池
+            pool.append((mc_moves, mc_score))
+        else:
+            # 从解池中随机选一个解进行扰动
+            pidx = int(rng.integers(len(pool)))
+            p_moves, p_score = pool[pidx]
+            use_random = rng.random() < 0.3
+            new_moves, new_score = _perturb_solution(
+                grid, p_moves, p_score, rng, weight=w, use_random=use_random
             )
-        if perturb_count % 1000 == 0:
-            log.debug(f"扰动进度: {perturb_count}次, 最优{best_score}分 ({elapsed():.1f}s)")
+            perturb_count += 1
+            if new_score > best_score:
+                best_score = new_score
+                best_moves = new_moves
+                perturb_improved += 1
+                log.info(
+                    f"Perturb #{perturb_count}: {best_score}分/{total_cells}, "
+                    f"{len(best_moves)}步, w={w} ({elapsed():.1f}s)"
+                )
+            # 加入解池
+            pool.append((new_moves, new_score))
 
-    log.info(f"Phase4 perturb: {perturb_count}次, 改进{perturb_improved}次")
+        # 定期裁剪解池：保留 top POOL_SIZE
+        if len(pool) > POOL_SIZE * 2:
+            pool.sort(key=lambda x: -x[1])
+            del pool[POOL_SIZE:]
+
+        if total_iter % 2000 == 0:
+            log.debug(
+                f"进度: MC {mc_count}次 扰动 {perturb_count}次, "
+                f"池{len(pool)}个, 最优{best_score}分 ({elapsed():.1f}s)"
+            )
+
+    log.info(
+        f"Phase3: MC {mc_count}次/改进{mc_improved}, "
+        f"扰动 {perturb_count}次/改进{perturb_improved}"
+    )
 
     pct = best_score / total_cells * 100 if total_cells > 0 else 0
     log.info(

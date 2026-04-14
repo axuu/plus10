@@ -15,7 +15,7 @@ recognition:
 
 solver:
   beam_width: 30
-  time_budget: 120  # 深度优化时间预算(秒)
+  time_budget: 60  # 深度优化时间预算(秒)
 
 executor:
   animation_delay: 0.1
