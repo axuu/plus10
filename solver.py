@@ -5,66 +5,8 @@ import time
 
 log = logging.getLogger("solver")
 
-
-def find_valid_rectangles(grid: np.ndarray, top_n: int = 0) -> list[tuple[int, int, int, int, int]]:
-    """找出所有和为10且至少包含2个非空数字的矩形。
-
-    Returns:
-        list of (r1, c1, r2, c2, count) 按 count 降序
-    """
-    rows, cols = grid.shape
-
-    sum_prefix = np.zeros((rows + 1, cols + 1), dtype=np.int32)
-    cnt_prefix = np.zeros((rows + 1, cols + 1), dtype=np.int32)
-
-    sum_prefix[1:, 1:] = np.cumsum(np.cumsum(grid, axis=0), axis=1)
-    cnt_prefix[1:, 1:] = np.cumsum(np.cumsum(grid > 0, axis=0), axis=1)
-
-    r1_vals = np.arange(rows)
-    c1_vals = np.arange(cols)
-    r2_vals = np.arange(rows)
-    c2_vals = np.arange(cols)
-
-    r1, c1, r2, c2 = np.meshgrid(r1_vals, c1_vals, r2_vals, c2_vals, indexing="ij")
-    r1 = r1.ravel()
-    c1 = c1.ravel()
-    r2 = r2.ravel()
-    c2 = c2.ravel()
-
-    mask = (r2 >= r1) & (c2 >= c1)
-    r1, c1, r2, c2 = r1[mask], c1[mask], r2[mask], c2[mask]
-
-    rect_sum = (
-        sum_prefix[r2 + 1, c2 + 1]
-        - sum_prefix[r1, c2 + 1]
-        - sum_prefix[r2 + 1, c1]
-        + sum_prefix[r1, c1]
-    )
-    rect_cnt = (
-        cnt_prefix[r2 + 1, c2 + 1]
-        - cnt_prefix[r1, c2 + 1]
-        - cnt_prefix[r2 + 1, c1]
-        + cnt_prefix[r1, c1]
-    )
-
-    valid = (rect_sum == 10) & (rect_cnt >= 2)
-    indices = np.nonzero(valid)[0]
-
-    if len(indices) == 0:
-        return []
-
-    counts = rect_cnt[indices]
-    order = np.argsort(-counts)
-
-    if top_n > 0:
-        order = order[:top_n]
-
-    indices = indices[order]
-
-    return [
-        (int(r1[i]), int(c1[i]), int(r2[i]), int(c2[i]), int(rect_cnt[i]))
-        for i in indices
-    ]
+# 缓存 meshgrid 索引，同尺寸 grid 只算一次
+_INDEX_CACHE: dict[tuple[int, int], tuple] = {}
 
 
 def _build_prefix(grid: np.ndarray):
@@ -77,47 +19,98 @@ def _build_prefix(grid: np.ndarray):
     return sp, cp
 
 
-def _eval_candidates(candidates, all_rects_arr, sp, cp, weight: float):
-    """向量化评估：清除候选矩形后还剩多少有效矩形。
+def find_valid_rectangles(
+    grid: np.ndarray, top_n: int = 0, prefix=None,
+) -> list[tuple[int, int, int, int, int]]:
+    """找出所有和为10且至少包含2个非空数字的矩形。
 
-    Returns: 每个候选的 eval 分数 (np.ndarray)
+    Args:
+        prefix: (sum_prefix, cnt_prefix) 可选，避免重复计算
+    Returns:
+        list of (r1, c1, r2, c2, count) 按 count 降序
     """
-    a_r1 = all_rects_arr[:, 0]
-    a_c1 = all_rects_arr[:, 1]
-    a_r2 = all_rects_arr[:, 2]
-    a_c2 = all_rects_arr[:, 3]
-    a_cnt = all_rects_arr[:, 4]
-    a_sum = (sp[a_r2 + 1, a_c2 + 1] - sp[a_r1, a_c2 + 1]
-             - sp[a_r2 + 1, a_c1] + sp[a_r1, a_c1])
+    rows, cols = grid.shape
+    key = (rows, cols)
 
-    nc = len(candidates)
-    evals = np.empty(nc, dtype=float)
+    # 缓存 meshgrid 索引
+    if key not in _INDEX_CACHE:
+        r1v = np.arange(rows)
+        c1v = np.arange(cols)
+        r1, c1, r2, c2 = np.meshgrid(r1v, c1v, r1v, c1v, indexing="ij")
+        r1, c1, r2, c2 = r1.ravel(), c1.ravel(), r2.ravel(), c2.ravel()
+        mask = (r2 >= r1) & (c2 >= c1)
+        _INDEX_CACHE[key] = (r1[mask], c1[mask], r2[mask], c2[mask])
 
-    for ci in range(nc):
-        r1a, c1a, r2a, c2a, cnta = candidates[ci]
+    r1, c1, r2, c2 = _INDEX_CACHE[key]
 
-        # 向量化交集
-        ri1 = np.maximum(r1a, a_r1)
-        ri2 = np.minimum(r2a, a_r2)
-        ci1 = np.maximum(c1a, a_c1)
-        ci2 = np.minimum(c2a, a_c2)
-        has_overlap = (ri1 <= ri2) & (ci1 <= ci2)
+    if prefix is not None:
+        sum_prefix, cnt_prefix = prefix
+    else:
+        sum_prefix, cnt_prefix = _build_prefix(grid)
 
-        isect_sum = np.zeros(len(a_r1), dtype=np.int32)
-        isect_cnt = np.zeros(len(a_r1), dtype=np.int32)
-        if has_overlap.any():
-            m = has_overlap
-            isect_sum[m] = (sp[ri2[m] + 1, ci2[m] + 1] - sp[ri1[m], ci2[m] + 1]
-                            - sp[ri2[m] + 1, ci1[m]] + sp[ri1[m], ci1[m]])
-            isect_cnt[m] = (cp[ri2[m] + 1, ci2[m] + 1] - cp[ri1[m], ci2[m] + 1]
-                            - cp[ri2[m] + 1, ci1[m]] + cp[ri1[m], ci1[m]])
+    rect_sum = (
+        sum_prefix[r2 + 1, c2 + 1] - sum_prefix[r1, c2 + 1]
+        - sum_prefix[r2 + 1, c1] + sum_prefix[r1, c1]
+    )
+    rect_cnt = (
+        cnt_prefix[r2 + 1, c2 + 1] - cnt_prefix[r1, c2 + 1]
+        - cnt_prefix[r2 + 1, c1] + cnt_prefix[r1, c1]
+    )
 
-        new_sum = a_sum - isect_sum
-        new_cnt = a_cnt - isect_cnt
-        surviving = int(np.sum((new_sum == 10) & (new_cnt >= 2)))
-        evals[ci] = cnta + surviving * weight
+    valid = (rect_sum == 10) & (rect_cnt >= 2)
+    indices = np.nonzero(valid)[0]
 
-    return evals
+    if len(indices) == 0:
+        return []
+
+    counts = rect_cnt[indices]
+    order = np.argsort(-counts)
+    if top_n > 0:
+        order = order[:top_n]
+    indices = indices[order]
+
+    return [
+        (int(r1[i]), int(c1[i]), int(r2[i]), int(c2[i]), int(rect_cnt[i]))
+        for i in indices
+    ]
+
+
+def _eval_candidates(cand_arr, all_arr, sp, cp, weight: float):
+    """全向量化前瞻评估（numpy 广播，无 Python 循环）。
+
+    Args:
+        cand_arr: 候选矩形 (nc, 5) int32
+        all_arr:  全部有效矩形 (nr, 5) int32
+    Returns:
+        每个候选的 eval 分数 (nc,) float
+    """
+    # (nc,1) × (1,nr) 广播
+    ri1 = np.maximum(cand_arr[:, 0:1], all_arr[np.newaxis, :, 0])
+    ri2 = np.minimum(cand_arr[:, 2:3], all_arr[np.newaxis, :, 2])
+    ci1 = np.maximum(cand_arr[:, 1:2], all_arr[np.newaxis, :, 1])
+    ci2 = np.minimum(cand_arr[:, 3:4], all_arr[np.newaxis, :, 3])
+    has_overlap = (ri1 <= ri2) & (ci1 <= ci2)
+
+    nc, nr = len(cand_arr), len(all_arr)
+    isect_sum = np.zeros((nc, nr), dtype=np.int32)
+    isect_cnt = np.zeros((nc, nr), dtype=np.int32)
+    if has_overlap.any():
+        m = has_overlap
+        isect_sum[m] = (sp[ri2[m] + 1, ci2[m] + 1] - sp[ri1[m], ci2[m] + 1]
+                        - sp[ri2[m] + 1, ci1[m]] + sp[ri1[m], ci1[m]])
+        isect_cnt[m] = (cp[ri2[m] + 1, ci2[m] + 1] - cp[ri1[m], ci2[m] + 1]
+                        - cp[ri2[m] + 1, ci1[m]] + cp[ri1[m], ci1[m]])
+
+    a_sum = (sp[all_arr[:, 2] + 1, all_arr[:, 3] + 1]
+             - sp[all_arr[:, 0], all_arr[:, 3] + 1]
+             - sp[all_arr[:, 2] + 1, all_arr[:, 1]]
+             + sp[all_arr[:, 0], all_arr[:, 1]])[np.newaxis, :]
+
+    new_sum = a_sum - isect_sum
+    new_cnt = all_arr[np.newaxis, :, 4] - isect_cnt
+    surviving = np.sum((new_sum == 10) & (new_cnt >= 2), axis=1).astype(float)
+
+    return cand_arr[:, 4].astype(float) + surviving * weight
 
 
 def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
@@ -128,7 +121,8 @@ def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
     total = 0
     while True:
         if lookahead:
-            all_rects = find_valid_rectangles(g, top_n=0)
+            sp, cp = _build_prefix(g)
+            all_rects = find_valid_rectangles(g, top_n=0, prefix=(sp, cp))
         else:
             all_rects = find_valid_rectangles(g, top_n=1)
         if not all_rects:
@@ -137,11 +131,9 @@ def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
         if not lookahead or len(all_rects) == 1:
             r1, c1, r2, c2, cnt = all_rects[0]
         else:
-            candidates = all_rects[:15]
-            sp, cp = _build_prefix(g)
             arr = np.array(all_rects, dtype=np.int32)
-            evals = _eval_candidates(candidates, arr, sp, cp, weight)
-            r1, c1, r2, c2, cnt = candidates[int(np.argmax(evals))]
+            evals = _eval_candidates(arr[:15], arr, sp, cp, weight)
+            r1, c1, r2, c2, cnt = all_rects[int(np.argmax(evals))]
 
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
@@ -188,23 +180,23 @@ def _simulate_lookahead(
     total = 0
 
     while True:
-        all_rects = find_valid_rectangles(g, top_n=0)
+        sp, cp = _build_prefix(g)
+        all_rects = find_valid_rectangles(g, top_n=0, prefix=(sp, cp))
         if not all_rects:
             break
 
         if len(all_rects) == 1:
             r1, c1, r2, c2, cnt = all_rects[0]
         else:
-            candidates = all_rects[:10]
-            sp, cp = _build_prefix(g)
             arr = np.array(all_rects, dtype=np.int32)
-            evals = _eval_candidates(candidates, arr, sp, cp, weight)
+            nc = min(10, len(arr))
+            evals = _eval_candidates(arr[:nc], arr, sp, cp, weight)
 
             # 加权随机选择
             evals = evals ** 2
             evals /= evals.sum()
-            idx = rng.choice(len(candidates), p=evals)
-            r1, c1, r2, c2, cnt = candidates[idx]
+            idx = rng.choice(nc, p=evals)
+            r1, c1, r2, c2, cnt = all_rects[idx]
 
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
         moves.append((r1, c1, r2, c2))
@@ -433,14 +425,14 @@ def solve(
     perturb_improved = 0
     explore_weights = [0.05, 0.2, 0.3, 0.6, 1.0]
     total_iter = 0
-    MC_WARMUP = 30  # 先跑一批 MC 填充解池
+    MC_WARMUP = 20  # 先跑一批 MC 填充解池
 
     while elapsed() < time_budget and not hit_target():
         total_iter += 1
         w = explore_weights[total_iter % len(explore_weights)]
 
-        # MC 探索 or 扰动调优（交替，初期偏 MC）
-        do_mc = total_iter <= MC_WARMUP or total_iter % 3 == 0 or not pool
+        # MC 探索 or 扰动调优（交替，初期偏 MC，之后 1/5 MC + 4/5 扰动）
+        do_mc = total_iter <= MC_WARMUP or total_iter % 5 == 0 or not pool
 
         if do_mc:
             mc_moves, mc_score = _simulate_lookahead(grid, rng, weight=w)
