@@ -17,6 +17,62 @@ except ImportError:
 _INDEX_CACHE: dict[tuple[int, int], tuple] = {}
 
 
+def _compute_digit_cost(grid: np.ndarray) -> np.ndarray:
+    """每个数字 d 消耗一次的边际"未来损失"估计 (0~1)。
+
+    含义：grid 中 d 被消耗一个后，"对面"配对数字 (10-d) 中有多少会成为孤儿。
+    - 稀缺方 (count[d] <= count[10-d])：每个 d 都"挂"着一个对面，cost=1
+    - 过剩方 (count[d] >  count[10-d])：cost = count[10-d] / count[d]
+    - 5: 自己配自己，cost=0.5 (每两个 5 配一对)；落单 5 cost=1
+    - 不在 grid 中的数字 cost=0
+    """
+    c = np.bincount(grid.ravel(), minlength=10).astype(np.float64)
+    cost = np.zeros(10, dtype=np.float64)
+    if c[5] >= 2:
+        cost[5] = 0.5
+    elif c[5] == 1:
+        cost[5] = 1.0
+    for d in (1, 2, 3, 4, 6, 7, 8, 9):
+        if c[d] <= 0:
+            continue
+        o = 10 - d
+        if c[d] <= c[o]:
+            cost[d] = 1.0
+        else:
+            cost[d] = c[o] / c[d]
+    return cost
+
+
+def _build_cost_prefix(grid: np.ndarray, digit_cost: np.ndarray) -> np.ndarray:
+    """构建 cost 前缀和，O(1) 查询任意矩形的总 cost。"""
+    rows, cols = grid.shape
+    cell_cost = digit_cost[grid]
+    cp = np.zeros((rows + 1, cols + 1), dtype=np.float64)
+    cp[1:, 1:] = np.cumsum(np.cumsum(cell_cost, axis=0), axis=1)
+    return cp
+
+
+def _rect_cost_batch(cand_arr: np.ndarray, cost_prefix: np.ndarray) -> np.ndarray:
+    """批量查询每个 rect 的 cost。"""
+    r1, c1, r2, c2 = cand_arr[:, 0], cand_arr[:, 1], cand_arr[:, 2], cand_arr[:, 3]
+    return (
+        cost_prefix[r2 + 1, c2 + 1] - cost_prefix[r1, c2 + 1]
+        - cost_prefix[r2 + 1, c1] + cost_prefix[r1, c1]
+    )
+
+
+def _pair_upper_bound(grid: np.ndarray) -> int:
+    """基于数字配对的可消除上界（忽略几何约束的乐观估计）。
+
+    用于 beam search 排序：相同当前分时，剩余可配对数字越多的状态越好。
+    """
+    c = np.bincount(grid.ravel(), minlength=10)
+    bound = int(c[5] // 2 * 2)
+    for d in range(1, 5):
+        bound += int(2 * min(c[d], c[10 - d]))
+    return bound
+
+
 def _build_prefix(grid: np.ndarray):
     """构建前缀和，用于 O(1) 矩形 sum/cnt 查询。"""
     rows, cols = grid.shape
@@ -150,8 +206,8 @@ def _eval_candidates(cand_arr, potential_arr, sp, cp, weight: float):
 
 
 def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
-                     weight: float = 0.3) -> tuple[list, int]:
-    """贪心补全。lookahead=True 时用解锁感知评估。"""
+                     weight: float = 0.3, alpha: float = 0.6) -> tuple[list, int]:
+    """贪心补全。lookahead=True 时用解锁感知 + digit-cost 评估。"""
     g = grid.copy()
     moves = []
     total = 0
@@ -186,6 +242,9 @@ def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
                 evals = eval_candidates_c(cand_arr, potential, sp, cp, weight)
             else:
                 evals = _eval_candidates(cand_arr, potential, sp, cp, weight)
+            if alpha > 0:
+                cost_prefix = _build_cost_prefix(g, _compute_digit_cost(g))
+                evals = evals - alpha * _rect_cost_batch(cand_arr, cost_prefix)
             best = int(np.argmax(evals))
             r1, c1, r2, c2, cnt = valid_list[best]
 
@@ -197,24 +256,37 @@ def _greedy_complete(grid: np.ndarray, lookahead: bool = False,
 
 
 def _simulate_game(
-    grid: np.ndarray, rng: np.random.Generator, temp: float = 2.0
+    grid: np.ndarray, rng: np.random.Generator, temp: float = 2.0,
+    alpha: float = 0.6,
 ) -> tuple[list, int]:
-    """随机加权贪心模拟（无前瞻，快速）。"""
+    """随机加权贪心模拟（无前瞻，快速）。alpha>0 时加 digit-cost 惩罚。"""
     g = grid.copy()
     moves = []
     total = 0
 
     while True:
-        rects = find_valid_rectangles(g, top_n=10)
+        rects = find_valid_rectangles(g, top_n=12)
         if not rects:
             break
 
         if temp <= 0:
             idx = rng.integers(len(rects))
         else:
-            weights = np.array([cnt ** temp for _, _, _, _, cnt in rects], dtype=float)
-            weights /= weights.sum()
-            idx = rng.choice(len(rects), p=weights)
+            cnt_arr = np.array([r[4] for r in rects], dtype=float)
+            if alpha > 0:
+                cand_arr = np.array(rects, dtype=np.int32)
+                cost_prefix = _build_cost_prefix(g, _compute_digit_cost(g))
+                cost_arr = _rect_cost_batch(cand_arr, cost_prefix)
+                score_arr = np.maximum(cnt_arr - alpha * cost_arr, 0.1)
+                weights = score_arr ** temp
+            else:
+                weights = cnt_arr ** temp
+            s = weights.sum()
+            if s <= 0:
+                idx = rng.integers(len(rects))
+            else:
+                weights /= s
+                idx = rng.choice(len(rects), p=weights)
 
         r1, c1, r2, c2, cnt = rects[idx]
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
@@ -226,9 +298,10 @@ def _simulate_game(
 
 
 def _simulate_lookahead(
-    grid: np.ndarray, rng: np.random.Generator, weight: float = 0.3
+    grid: np.ndarray, rng: np.random.Generator, weight: float = 0.3,
+    alpha: float = 0.6,
 ) -> tuple[list, int]:
-    """解锁感知的前瞻模拟：评估每步对未来可行矩形（含解锁）的影响。"""
+    """解锁感知 + digit-cost 前瞻模拟。"""
     g = grid.copy()
     moves = []
     total = 0
@@ -253,16 +326,23 @@ def _simulate_lookahead(
         if len(valid_list) == 1:
             r1, c1, r2, c2, cnt = valid_list[0]
         else:
-            nc = min(10, len(valid_list))
+            nc = min(15, len(valid_list))
             cand_arr = np.array(valid_list[:nc], dtype=np.int32)
             if _USE_CYTHON:
                 evals = eval_candidates_c(cand_arr, potential, sp, cp, weight)
             else:
                 evals = _eval_candidates(cand_arr, potential, sp, cp, weight)
+            if alpha > 0:
+                cost_prefix = _build_cost_prefix(g, _compute_digit_cost(g))
+                evals = evals - alpha * _rect_cost_batch(cand_arr, cost_prefix)
 
-            evals = evals ** 2
-            evals /= evals.sum()
-            idx = rng.choice(nc, p=evals)
+            evals = np.maximum(evals, 0.1) ** 2
+            s = evals.sum()
+            if s <= 0:
+                idx = int(rng.integers(nc))
+            else:
+                evals = evals / s
+                idx = rng.choice(nc, p=evals)
             r1, c1, r2, c2, cnt = valid_list[idx]
 
         eliminated = int(np.count_nonzero(g[r1:r2 + 1, c1:c2 + 1]))
@@ -277,6 +357,7 @@ def _perturb_solution(
     grid: np.ndarray, moves: list, score: int,
     rng: np.random.Generator, weight: float = 0.3,
     use_random: bool = False,
+    alpha: float = 0.3,
 ) -> tuple[list, int]:
     """扰动搜索：从已有方案中删除若干步，重放有效步骤后重新补全。
 
@@ -312,9 +393,9 @@ def _perturb_solution(
 
     # 补全：随机前瞻 or 确定性前瞻贪心
     if use_random:
-        extra_moves, extra_score = _simulate_lookahead(g, rng, weight=weight)
+        extra_moves, extra_score = _simulate_lookahead(g, rng, weight=weight, alpha=alpha)
     else:
-        extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight)
+        extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight, alpha=alpha)
     return new_moves + extra_moves, new_score + extra_score
 
 
@@ -335,6 +416,7 @@ def _replay_moves(grid: np.ndarray, moves: list) -> tuple[np.ndarray, list, int]
 def _crossover(
     grid: np.ndarray, moves_a: list, moves_b: list,
     rng: np.random.Generator, weight: float = 0.3,
+    alpha: float = 0.3,
 ) -> tuple[list, int]:
     """解交叉：取 A 的前缀 + B 的后缀，重放有效步骤后补全。"""
     min_len = min(len(moves_a), len(moves_b))
@@ -345,7 +427,7 @@ def _crossover(
     combined = list(moves_a[:cut]) + list(moves_b[cut:])
     g, valid_moves, score = _replay_moves(grid, combined)
 
-    extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight)
+    extra_moves, extra_score = _greedy_complete(g, lookahead=True, weight=weight, alpha=alpha)
     return valid_moves + extra_moves, score + extra_score
 
 
@@ -355,6 +437,7 @@ def solve(
     target_score: int = 0,
     beam_width: int = 30,
     warm_start: tuple[list, int] | None = None,
+    alpha: float = 0.5,
     **kwargs,
 ) -> tuple[list[tuple[int, int, int, int]], int]:
     """两阶段求解器，在时间预算内最大化分数。
@@ -414,10 +497,19 @@ def solve(
             if score + remaining <= best_score:
                 continue
 
-            rects = find_valid_rectangles(g, top_n=expand_n)
+            # 拉宽召回 + cost-aware 重排：取 expand_n*2 候选，按 (cnt - α*cost) 选 top expand_n
+            rects = find_valid_rectangles(g, top_n=expand_n * 2)
             if not rects:
                 candidates.append((g, moves, score))
                 continue
+            if alpha > 0 and len(rects) > expand_n:
+                cand_arr = np.array(rects, dtype=np.int32)
+                cost_prefix = _build_cost_prefix(g, _compute_digit_cost(g))
+                cnt_arr = cand_arr[:, 4].astype(np.float64)
+                cost_arr = _rect_cost_batch(cand_arr, cost_prefix)
+                scored_rect = cnt_arr - alpha * cost_arr
+                order = np.argsort(-scored_rect)[:expand_n]
+                rects = [rects[i] for i in order]
 
             any_expanded = True
             for r1, c1, r2, c2, cnt in rects:
@@ -431,11 +523,15 @@ def solve(
         if not any_expanded or not candidates:
             break
 
-        # 按分数降序 + grid 去重，保留 beam_width 个
-        candidates.sort(key=lambda x: -x[2])
+        # 按 (当前分 + 剩余配对上界) 降序 + grid 去重，保留 beam_width 个
+        scored = []
+        for g, moves, score in candidates:
+            potential = _pair_upper_bound(g)
+            scored.append((score + potential, score, g, moves))
+        scored.sort(key=lambda x: -x[0])
         seen: set[bytes] = set()
         unique: list[tuple[np.ndarray, list, int]] = []
-        for g, moves, score in candidates:
+        for _, score, g, moves in scored:
             h = g.tobytes()
             if h not in seen:
                 seen.add(h)
@@ -454,17 +550,23 @@ def solve(
         if elapsed() >= beam_deadline or hit_target():
             break
 
-    # 前瞻贪心补全所有 beam + 快照，建立基线
+    # 前瞻贪心补全 top 状态，建立基线，并收集多解种子供 Phase 3
     all_states = [(g, moves, score) for g, moves, score in beams]
     all_states += [(g, m, s) for g, m, s, _ in snapshot_pool]
+    # 按当前分降序，只补全 top 30，节约时间给 Phase 3
+    all_states.sort(key=lambda x: -x[2])
+    all_states = all_states[:30]
 
+    phase1_seeds: list[tuple[list, int]] = []
     for g, moves, score in all_states:
-        for la in (False, True):
-            extra_moves, extra_score = _greedy_complete(g, lookahead=la)
+        # 3 组合：纯贪心 / 前瞻无cost / 前瞻+cost
+        for la, a in ((False, 0.0), (True, 0.0), (True, alpha)):
+            extra_moves, extra_score = _greedy_complete(g, lookahead=la, alpha=a)
             total = score + extra_score
             if total > best_score:
                 best_score = total
                 best_moves = moves + extra_moves
+            phase1_seeds.append((moves + extra_moves, total))
 
     log.info(
         f"Phase1 beam: depth={depth}, {best_score}分/{total_cells}, "
@@ -496,7 +598,7 @@ def solve(
         if prefix_score + remaining <= best_score:
             continue
 
-        sim_moves, sim_score = _simulate_game(g, rng)
+        sim_moves, sim_score = _simulate_game(g, rng, alpha=alpha)
         total = prefix_score + sim_score
 
         if total > best_score:
@@ -522,6 +624,17 @@ def solve(
     pool: list[tuple[list, int]] = []
     if best_moves:
         pool.append((best_moves, best_score))
+    # 把 Phase 1 的 top-N 不同解作为多样化种子（dedup by score+len）
+    if phase1_seeds:
+        phase1_seeds.sort(key=lambda x: -x[1])
+        seen_sigs = {(best_score, len(best_moves))}
+        for m, s in phase1_seeds[:POOL_SIZE]:
+            sig = (s, len(m))
+            if sig not in seen_sigs:
+                seen_sigs.add(sig)
+                pool.append((m, s))
+            if len(pool) >= POOL_SIZE:
+                break
 
     mc_count = 0
     mc_improved = 0
@@ -530,20 +643,38 @@ def solve(
     cross_count = 0
     cross_improved = 0
     explore_weights = [0.05, 0.2, 0.3, 0.6, 1.0]
+    # alpha 不轮换 (实验表明保持稳定的 cost-aware 偏向更好)
+    explore_alphas = [alpha] * 5
     total_iter = 0
     no_improve = 0
+    last_improve_time = elapsed()
     MC_WARMUP = 20
     RESTART_THRESHOLD = 5000
+    # 时间感知重启：每 max(2s, 25% 剩余) 无改进就重启
+    phase3_start = elapsed()
+    restart_seconds = max(2.0, (time_budget - phase3_start) * 0.20)
 
     while elapsed() < time_budget and not hit_target():
         total_iter += 1
         w = explore_weights[total_iter % len(explore_weights)]
+        a = explore_alphas[total_iter % len(explore_alphas)]
 
-        # 重启：长时间无改进 → 清池 + MC 爆发
-        if no_improve >= RESTART_THRESHOLD:
-            log.debug(f"重启: {no_improve}次无改进 ({elapsed():.1f}s)")
+        # 重启：长时间无改进 → 清池 + 多源重启
+        time_since_improve = elapsed() - last_improve_time
+        if (no_improve >= RESTART_THRESHOLD or
+                time_since_improve >= restart_seconds):
+            log.debug(
+                f"重启: {no_improve}次/{time_since_improve:.1f}s 无改进 "
+                f"({elapsed():.1f}s)"
+            )
             no_improve = 0
+            last_improve_time = elapsed()
+            # 重启时混入 Phase 1 多样种子 + 立即 MC 爆发一次以注入新方向
             pool = [(best_moves, best_score)]
+            if phase1_seeds:
+                rng.shuffle(phase1_seeds)
+                for m, s in phase1_seeds[:3]:
+                    pool.append((m, s))
 
         # 操作选择：初期 MC; 之后 1/7 MC + 2/7 交叉 + 4/7 扰动
         in_warmup = total_iter <= MC_WARMUP or not pool
@@ -554,7 +685,7 @@ def solve(
         improved = False
 
         if do_mc:
-            mc_moves, mc_score = _simulate_lookahead(grid, rng, weight=w)
+            mc_moves, mc_score = _simulate_lookahead(grid, rng, weight=w, alpha=a)
             mc_count += 1
             if mc_score > best_score:
                 best_score, best_moves = mc_score, mc_moves
@@ -572,7 +703,7 @@ def solve(
             if j >= i:
                 j += 1
             new_moves, new_score = _crossover(
-                grid, pool[i][0], pool[j][0], rng, weight=w
+                grid, pool[i][0], pool[j][0], rng, weight=w, alpha=a
             )
             cross_count += 1
             if new_score > best_score:
@@ -590,7 +721,8 @@ def solve(
             p_moves, _ = pool[pidx]
             use_random = rng.random() < 0.3
             new_moves, new_score = _perturb_solution(
-                grid, p_moves, 0, rng, weight=w, use_random=use_random
+                grid, p_moves, 0, rng, weight=w, use_random=use_random,
+                alpha=a,
             )
             perturb_count += 1
             if new_score > best_score:
@@ -603,7 +735,11 @@ def solve(
                 )
             pool.append((new_moves, new_score))
 
-        no_improve = 0 if improved else no_improve + 1
+        if improved:
+            no_improve = 0
+            last_improve_time = elapsed()
+        else:
+            no_improve += 1
 
         if len(pool) > POOL_SIZE * 2:
             pool.sort(key=lambda x: -x[1])
