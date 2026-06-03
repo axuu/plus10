@@ -8,7 +8,7 @@ import numpy as np
 import win32gui
 from capture import set_dpi_aware, find_game_window, capture_window
 from recognizer import GridRecognizer
-from solver import solve
+from solver import solve_multi_alpha
 from executor import Executor
 
 import logging
@@ -72,7 +72,11 @@ def main():
 
         beam_width = config["solver"].get("beam_width", 30)
         time_budget = config["solver"].get("time_budget", 120.0)
-        log.info(f"搜索参数: beam_width={beam_width}, time_budget={time_budget}s")
+        solver_alphas = tuple(config["solver"].get("alphas", [0.0, 0.5]))
+        log.info(
+            f"搜索参数: beam_width={beam_width}, time_budget={time_budget}s, "
+            f"alphas={solver_alphas}"
+        )
 
         total_score = 0
 
@@ -149,10 +153,11 @@ def main():
 
             # --- 规划 ---
             print(f"\n快速规划中...")
-            best_moves, best_score = solve(
+            best_moves, best_score = solve_multi_alpha(
                 grid,
                 time_budget=min(5.0, time_budget),
                 beam_width=beam_width,
+                alphas=solver_alphas,
             )
 
             if not best_moves:
@@ -168,23 +173,25 @@ def main():
                     break
 
                 if choice == "r":
-                    moves, score = solve(
+                    moves, score = solve_multi_alpha(
                         grid,
                         time_budget=min(5.0, time_budget),
                         beam_width=beam_width,
                         warm_start=(best_moves, best_score),
+                        alphas=solver_alphas,
                     )
                     best_moves, best_score = moves, score
                     print(f"  消{best_score} 剩{nonzero - best_score} ({len(best_moves)}步)")
                 elif choice.isdigit():
                     target = int(choice)
                     print(f"深度优化中，目标{target}，时限{time_budget:.0f}s...")
-                    moves, score = solve(
+                    moves, score = solve_multi_alpha(
                         grid,
                         time_budget=time_budget,
                         target_score=target,
                         beam_width=beam_width,
                         warm_start=(best_moves, best_score),
+                        alphas=solver_alphas,
                     )
                     best_moves, best_score = moves, score
                     if best_score >= target:

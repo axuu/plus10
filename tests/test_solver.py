@@ -1,6 +1,7 @@
 # tests/test_solver.py
 import numpy as np
-from solver import find_valid_rectangles, solve
+import solver as solver_mod
+from solver import find_valid_rectangles, solve, solve_multi_alpha
 
 
 def test_find_single_pair_horizontal():
@@ -108,3 +109,44 @@ def test_solve_warm_start():
     warm_score = 2
     moves, score = solve(grid, time_budget=1.0, warm_start=(warm_moves, warm_score))
     assert score >= warm_score
+
+
+def test_solve_multi_alpha_uses_best_warm_start():
+    """多 alpha 搜索不会丢掉已知最优解"""
+    grid = np.zeros((16, 10), dtype=int)
+    grid[0][0] = 2
+    grid[0][1] = 8
+    warm_moves = [(0, 0, 0, 1)]
+    warm_score = 2
+    moves, score = solve_multi_alpha(
+        grid,
+        time_budget=0.1,
+        warm_start=(warm_moves, warm_score),
+        alphas=(0.0, 0.5),
+    )
+    assert moves
+    assert score >= warm_score
+
+
+def test_solve_multi_alpha_splits_initial_budget(monkeypatch):
+    """time_budget 是多 alpha 的总预算，不是每个 alpha 各跑一遍。"""
+    grid = np.zeros((16, 10), dtype=int)
+    budgets = []
+
+    def fake_solve(*args, **kwargs):
+        budgets.append(kwargs["time_budget"])
+        alpha = kwargs["alpha"]
+        return [(0, 0, 0, 1)], 2 if alpha == 0.0 else 4
+
+    monkeypatch.setattr(solver_mod, "solve", fake_solve)
+
+    moves, score = solver_mod.solve_multi_alpha(
+        grid,
+        time_budget=10.0,
+        alphas=(0.0, 0.5),
+    )
+
+    assert moves
+    assert score == 4
+    assert len(budgets) == 2
+    assert budgets[0] <= 5.1
